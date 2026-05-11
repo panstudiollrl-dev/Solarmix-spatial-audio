@@ -38,6 +38,7 @@ public class FMSynthesizer : MonoBehaviour
     public float pulseDecay = 0.08f;
 
     private AudioSource audioSource;
+    private IPlanetSpatializer spatializer;
     private double cachedSampleRate;
     private double carrierPhase, modPhase, lfoPhase;
     private double pulseTimer = 0;
@@ -48,8 +49,8 @@ public class FMSynthesizer : MonoBehaviour
     void Awake()
     {
         audioSource = GetComponent<AudioSource>();
-        audioSource.spatialBlend = 1f;
-        audioSource.spatialize = true;
+        audioSource.spatialBlend = 0f;
+        audioSource.spatialize = false;
         
         // 保留我們剛剛設定好的微距都卜勒，帶來自然的空氣推擠感
         audioSource.dopplerLevel = 0.02f; 
@@ -61,6 +62,7 @@ public class FMSynthesizer : MonoBehaviour
         audioSource.maxDistance = 10000f;
         audioSource.rolloffMode = AudioRolloffMode.Linear;
         cachedSampleRate = AudioSettings.outputSampleRate;
+        spatializer = GetComponent<IPlanetSpatializer>();
     }
 
     public void Init()
@@ -167,8 +169,19 @@ public class FMSynthesizer : MonoBehaviour
             if (float.IsNaN(output) || float.IsInfinity(output))
                 output = 0f;
 
-            for (int c = 0; c < channels; c++)
-                data[i + c] = output;
+            if (spatializer != null && channels >= 2)
+            {
+                spatializer.ProcessSample(output, out float left, out float right);
+                data[i] = left;
+                data[i + 1] = right;
+                for (int c = 2; c < channels; c++)
+                    data[i + c] = 0f;
+            }
+            else
+            {
+                for (int c = 0; c < channels; c++)
+                    data[i + c] = output;
+            }
         }
     }
 }
