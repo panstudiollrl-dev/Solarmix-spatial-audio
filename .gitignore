@@ -1,0 +1,43 @@
+# Unity generated folders
+Library/
+Temp/
+Obj/
+Logs/
+UserSettings/
+
+# Build outputs
+Build/
+Builds/
+build/
+
+# IDE/editor files
+.vs/
+.vscode/
+*.csproj
+*.sln
+*.slnx
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+
+# OS metadata
+.DS_Store
+._*
+Thumbs.db
+
+# Unity crash/recovery and local tooling
+Assets/_Recovery/
+Assets/_Recovery.meta
+.utmp/
+.plastic/
+ignore.conf
+
+# Addressables and profiling outputs
+MemoryCaptures/
+sysinfo.txt
+*.apk
+*.aab
+*.unitypackage
+*.app

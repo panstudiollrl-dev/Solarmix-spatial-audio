@@ -1,0 +1,105 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &626120049858076491
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 5021011306226638061}
+  - component: {fileID: 3676786349535584408}
+  m_Layer: 0
+  m_Name: SolarSystem
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &5021011306226638061
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 626120049858076491}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0.00007, y: -0, z: 0.00004}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &3676786349535584408
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 626120049858076491}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 74822f8a12145475b8a4be10622fa9f8, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SolarSystemManager
+  defaultPlanetMaterial: {fileID: 2100000, guid: 3111a37077fd4446490c89e62adfa0e9, type: 2}
+  defaultSunMaterial: {fileID: 2100000, guid: 34249c07b834642878b04187ff4842a2, type: 2}
+  sunSize: 3
+  sunColor: {r: 1, g: 0.87, b: 0.27, a: 1}
+  planetsData:
+  - name: "\u6C34\u661F"
+    color: {r: 0.67, g: 0.67, b: 0.67, a: 1}
+    defaultSpeed: 0.02
+    dist: 30
+    incl: 7
+    size: 0.8
+  - name: "\u91D1\u661F"
+    color: {r: 0.89, g: 0.73, b: 0.46, a: 1}
+    defaultSpeed: 0.015
+    dist: 50
+    incl: 3.4
+    size: 1.2
+  - name: "\u5730\u7403"
+    color: {r: 0.2, g: 0.2, b: 1, a: 1}
+    defaultSpeed: 0.01
+    dist: 75
+    incl: 0
+    size: 1.5
+  - name: "\u706B\u661F"
+    color: {r: 1, g: 0.2, b: 0, a: 1}
+    defaultSpeed: 0.008
+    dist: 100
+    incl: 1.8
+    size: 1
+  - name: "\u6728\u661F"
+    color: {r: 0.79, g: 0.56, b: 0.22, a: 1}
+    defaultSpeed: 0.004
+    dist: 150
+    incl: 1.3
+    size: 4
+  - name: "\u571F\u661F"
+    color: {r: 0.89, g: 0.88, b: 0.75, a: 1}
+    defaultSpeed: 0.003
+    dist: 210
+    incl: 2.5
+    size: 3.2
+  - name: "\u5929\u738B\u661F"
+    color: {r: 0.3, g: 0.72, b: 1, a: 1}
+    defaultSpeed: 0.002
+    dist: 270
+    incl: 0.8
+    size: 2.2
+  - name: "\u6D77\u738B\u661F"
+    color: {r: 0.16, g: 0.24, b: 0.71, a: 1}
+    defaultSpeed: 0.0015
+    dist: 330
+    incl: 1.8
+    size: 2
+  - name: "\u51A5\u738B\u661F"
+    color: {r: 0.87, g: 0.87, b: 0.87, a: 1}
+    defaultSpeed: 0.001
+    dist: 400
+    incl: 17
+    size: 2.5
