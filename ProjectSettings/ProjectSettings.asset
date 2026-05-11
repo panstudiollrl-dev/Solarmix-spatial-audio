@@ -886,10 +886,10 @@ PlayerSettings:
   webWasm2023: 0
   webEnableSubmoduleStrippingCompatibility: 0
   scriptingDefineSymbols:
-    Android: STEAMAUDIO_ENABLED
-    Standalone: STEAMAUDIO_ENABLED
-    WebGL: STEAMAUDIO_ENABLED
-    iPhone: STEAMAUDIO_ENABLED
+    Android: MESHRIR_SPATIALIZER
+    Standalone: MESHRIR_SPATIALIZER
+    WebGL: MESHRIR_SPATIALIZER
+    iPhone: MESHRIR_SPATIALIZER
   additionalCompilerArguments: {}
   platformArchitecture: {}
   scriptingBackend:

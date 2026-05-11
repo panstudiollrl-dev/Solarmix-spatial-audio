@@ -223,8 +223,8 @@ public class SolarSystemManager : MonoBehaviour
 
         // 音效
         var audioSource = go.AddComponent<AudioSource>();
-        audioSource.spatialBlend = 1f;
-        audioSource.spatialize = true;
+        audioSource.spatialBlend = 0f;
+        audioSource.spatialize = false;
         audioSource.dopplerLevel = 1f;
         audioSource.loop = true;
         audioSource.playOnAwake = false;
@@ -239,6 +239,10 @@ public class SolarSystemManager : MonoBehaviour
         steamSrc.interpolation = SteamAudio.HRTFInterpolation.Bilinear;
         steamSrc.directivity = true;
         steamSrc.occlusion = true;
+        #endif
+
+        #if MESHRIR_SPATIALIZER
+        go.AddComponent<MeshRIRSpatializer>();
         #endif
 
         var synth = go.AddComponent<FMSynthesizer>();
