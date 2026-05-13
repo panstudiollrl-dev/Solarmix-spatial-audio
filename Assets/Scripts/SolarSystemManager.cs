@@ -4,6 +4,7 @@ using System.Collections.Generic;
 public class SolarSystemManager : MonoBehaviour
 {
     public static SolarSystemManager Instance;
+    const int OrbitSegments = 384;
 
     [Header("材質")]
     public Material defaultPlanetMaterial;
@@ -76,11 +77,6 @@ public class SolarSystemManager : MonoBehaviour
         sunMat.SetColor("_EmissionColor", new Color(1f, 0.9f, 0.3f) * 2f);
         sunMat.EnableKeyword("_EMISSION");
         sun.GetComponent<MeshRenderer>().material = sunMat;
-
-        // 3-axis orientation markers: R=right, G=up, B=forward
-        SpawnSunAxisArrow(transform, Vector3.right,   new Color(0.95f, 0.2f, 0.2f));
-        SpawnSunAxisArrow(transform, Vector3.up,      new Color(0.2f, 0.95f, 0.3f));
-        SpawnSunAxisArrow(transform, Vector3.forward, new Color(0.3f, 0.5f, 1.0f));
     }
 
     void SpawnSunAxisArrow(Transform parent, Vector3 dir, Color col)
@@ -158,14 +154,21 @@ public class SolarSystemManager : MonoBehaviour
         var lr = orbitGO.AddComponent<LineRenderer>();
         lr.useWorldSpace = false;
         lr.loop = true;
-        lr.startWidth = lr.endWidth = 0.5f;
-        var orbitMat = new Material(defaultPlanetMaterial);
-        orbitMat.color = new Color(data.color.r, data.color.g, data.color.b, 0.25f);
-        lr.material = orbitMat;
-        lr.positionCount = 129;
-        for (int s = 0; s <= 128; s++)
+        lr.alignment = LineAlignment.View;
+        lr.textureMode = LineTextureMode.Stretch;
+        lr.numCornerVertices = 8;
+        lr.numCapVertices = 8;
+        lr.generateLightingData = false;
+        lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        lr.receiveShadows = false;
+        float orbitWidth = Application.isMobilePlatform ? 1.25f : 0.85f;
+        lr.widthCurve = AnimationCurve.EaseInOut(0f, orbitWidth, 1f, orbitWidth * 0.55f);
+        lr.colorGradient = CreateOrbitGradient(data.color);
+        lr.material = CreateOrbitMaterial(data.color);
+        lr.positionCount = OrbitSegments + 1;
+        for (int s = 0; s <= OrbitSegments; s++)
         {
-            float a = (s / 128f) * Mathf.PI * 2f;
+            float a = (s / (float)OrbitSegments) * Mathf.PI * 2f;
             lr.SetPosition(s, new Vector3(Mathf.Cos(a) * data.dist, 0f, Mathf.Sin(a) * data.dist));
         }
 
@@ -225,7 +228,7 @@ public class SolarSystemManager : MonoBehaviour
         var audioSource = go.AddComponent<AudioSource>();
         audioSource.spatialBlend = 0f;
         audioSource.spatialize = false;
-        audioSource.dopplerLevel = 1f;
+        audioSource.dopplerLevel = 0f;
         audioSource.loop = true;
         audioSource.playOnAwake = false;
         audioSource.volume = 1f;
@@ -242,7 +245,8 @@ public class SolarSystemManager : MonoBehaviour
         #endif
 
         #if HIFI_HARP_SPATIALIZER
-        go.AddComponent<HiFiHarpSpatializer>();
+        var harpSpatializer = go.AddComponent<HiFiHarpSpatializer>();
+        harpSpatializer.rirIndex = i;
         #endif
 
         var synth = go.AddComponent<FMSynthesizer>();
@@ -258,5 +262,46 @@ public class SolarSystemManager : MonoBehaviour
     {
         if (idx < 0 || idx >= planets.Length) return Color.white;
         return planets[idx].color;
+    }
+
+    Material CreateOrbitMaterial(Color color)
+    {
+        Shader shader = Shader.Find("Universal Render Pipeline/Particles/Unlit");
+        if (shader == null)
+            shader = Shader.Find("Sprites/Default");
+        if (shader == null)
+            shader = Shader.Find("Universal Render Pipeline/Unlit");
+
+        var mat = new Material(shader);
+        var lineColor = new Color(color.r, color.g, color.b, 0.62f);
+        mat.color = lineColor;
+        if (mat.HasProperty("_BaseColor"))
+            mat.SetColor("_BaseColor", lineColor);
+        if (mat.HasProperty("_EmissionColor"))
+        {
+            mat.SetColor("_EmissionColor", color * 1.7f);
+            mat.EnableKeyword("_EMISSION");
+        }
+        return mat;
+    }
+
+    Gradient CreateOrbitGradient(Color color)
+    {
+        var gradient = new Gradient();
+        gradient.SetKeys(
+            new[]
+            {
+                new GradientColorKey(Color.Lerp(color, Color.white, 0.2f), 0f),
+                new GradientColorKey(color, 0.55f),
+                new GradientColorKey(Color.Lerp(color, new Color(0.18f, 0.95f, 1f), 0.22f), 1f)
+            },
+            new[]
+            {
+                new GradientAlphaKey(0.18f, 0f),
+                new GradientAlphaKey(0.72f, 0.22f),
+                new GradientAlphaKey(0.42f, 0.7f),
+                new GradientAlphaKey(0.18f, 1f)
+            });
+        return gradient;
     }
 }

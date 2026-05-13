@@ -36,6 +36,15 @@ public class CameraController : MonoBehaviour
         UpdateCamera();
     }
 
+    public void ResetView()
+    {
+        rotX = 55f;
+        rotY = 0f;
+        target = Vector3.zero;
+        currentDistance = 950f;
+        UpdateCamera();
+    }
+
     void Update()
     {
         // Register / release UI-started fingers

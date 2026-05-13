@@ -1,60 +1,101 @@
+using System;
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
 [DisallowMultipleComponent]
 public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
 {
-    const int MaxKernelSamples = 2048;
+    const int MaxKernelSamples = 1536;
+    const int MaxSparseTaps = 96;
     const int RingSize = 4096;
 
-    [Range(0f, 1f)] public float roomAmount = 0.65f;
-    [Range(0f, 1f)] public float directAmount = 0.9f;
-    [Range(0f, 1f)] public float width = 0.85f;
+    struct Tap
+    {
+        public int delay;
+        public float left;
+        public float right;
+    }
+
+    struct KernelSet
+    {
+        public float[] w;
+        public float[] x;
+        public float[] y;
+        public float[] z;
+    }
+
+    [Range(0f, 1f)] public float roomAmount = 0.76f;
+    [Range(0f, 1f)] public float directAmount = 0.72f;
+    [Range(0f, 1f)] public float width = 1f;
+    public int rirIndex;
 
     float[] wKernel;
     float[] xKernel;
     float[] yKernel;
     float[] zKernel;
-    float[] leftKernel;
-    float[] rightKernel;
+    KernelSet[] rirKernels = Array.Empty<KernelSet>();
+    Tap[] taps = Array.Empty<Tap>();
     readonly float[] ring = new float[RingSize];
     int ringIndex;
     Transform listener;
     int lastDirectionBucket = int.MinValue;
+    int lastKernelIndex = -1;
+    float cachedSide;
+    float targetSide;
+    float cachedFront = 1f;
+    float targetFront = 1f;
+    float cachedDistanceGain = 0.75f;
+    float targetDistanceGain = 0.75f;
+    float cachedRoomDistanceGain = 0.65f;
+    float targetRoomDistanceGain = 0.65f;
 
     void Awake()
     {
         listener = FindAnyObjectByType<AudioListener>()?.transform;
         LoadOrBuildKernels();
-        UpdateStereoKernels(true);
+        UpdateSparseTaps(true);
     }
 
     void Update()
     {
-        UpdateStereoKernels(false);
+        UpdateSparseTaps(false);
     }
 
     public void ProcessSample(float mono, out float left, out float right)
     {
         ring[ringIndex] = mono;
 
-        float l = mono * directAmount;
-        float r = mono * directAmount;
-        var lk = leftKernel;
-        var rk = rightKernel;
-        int n = lk != null ? lk.Length : 0;
+        cachedSide += (targetSide - cachedSide) * 0.0016f;
+        cachedFront += (targetFront - cachedFront) * 0.0016f;
+        cachedDistanceGain += (targetDistanceGain - cachedDistanceGain) * 0.0011f;
+        cachedRoomDistanceGain += (targetRoomDistanceGain - cachedRoomDistanceGain) * 0.0011f;
 
-        for (int i = 0; i < n; i++)
+        float side = cachedSide;
+        int itdSamples = Mathf.RoundToInt(Mathf.Abs(side) * width * 36f);
+        float leftDirect = side > 0f ? ReadRingDelay(itdSamples) : mono;
+        float rightDirect = side < 0f ? ReadRingDelay(itdSamples) : mono;
+
+        float pan = Mathf.Clamp(side * width * 1.18f, -0.98f, 0.98f);
+        float angle = (pan + 1f) * Mathf.PI * 0.25f;
+        float leftGain = Mathf.Cos(angle);
+        float rightGain = Mathf.Sin(angle);
+        float frontPresence = Mathf.Lerp(0.82f, 1.06f, Mathf.Clamp01((cachedFront + 1f) * 0.5f));
+
+        float l = leftDirect * directAmount * cachedDistanceGain * frontPresence * leftGain;
+        float r = rightDirect * directAmount * cachedDistanceGain * frontPresence * rightGain;
+
+        var activeTaps = taps;
+        for (int i = 0; i < activeTaps.Length; i++)
         {
-            int idx = ringIndex - i;
-            if (idx < 0) idx += RingSize;
-            float s = ring[idx];
-            l += s * lk[i] * roomAmount;
-            r += s * rk[i] * roomAmount;
+            int idx = ringIndex - activeTaps[i].delay;
+            while (idx < 0) idx += RingSize;
+            float s = ring[idx & (RingSize - 1)];
+            l += s * activeTaps[i].left * roomAmount * cachedRoomDistanceGain;
+            r += s * activeTaps[i].right * roomAmount * cachedRoomDistanceGain;
         }
 
-        ringIndex++;
-        if (ringIndex >= RingSize) ringIndex = 0;
+        ringIndex = (ringIndex + 1) & (RingSize - 1);
 
         left = Mathf.Clamp(l, -1f, 1f);
         right = Mathf.Clamp(r, -1f, 1f);
@@ -63,106 +104,204 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
     void LoadOrBuildKernels()
     {
         string root = Path.Combine(Application.streamingAssetsPath, "HiFiHARP");
-        string wav = SpatialAudioWav.FindFirstWav(root);
-        if (!string.IsNullOrEmpty(wav) && SpatialAudioWav.TryRead(wav, out var audio) && audio.channels >= 4)
+        string[] wavs = Directory.Exists(root)
+            ? Directory.GetFiles(root, "*.wav", SearchOption.AllDirectories)
+            : Array.Empty<string>();
+        Array.Sort(wavs, StringComparer.OrdinalIgnoreCase);
+
+        var loaded = new List<KernelSet>();
+        int maxFiles = Mathf.Min(9, wavs.Length);
+        for (int i = 0; i < maxFiles; i++)
         {
-            BuildFromFoaWav(audio);
-            Debug.Log("HiFi-HARP spatializer loaded FOA RIR: " + wav);
+            if (!SpatialAudioWav.TryRead(wavs[i], out var audio) || audio.channels < 4)
+                continue;
+
+            loaded.Add(BuildFromFoaWav(audio));
+        }
+
+        if (loaded.Count > 0)
+        {
+            rirKernels = loaded.ToArray();
+            ApplyKernel(0);
+            Debug.Log("HiFi-HARP spatializer loaded " + loaded.Count + " FOA RIRs from " + root);
             return;
         }
 
         BuildFallbackFoaRoom();
-        Debug.Log("HiFi-HARP spatializer using built-in FOA fallback. Put FOA wav files under StreamingAssets/HiFiHARP to use the dataset.");
+        Debug.Log("HiFi-HARP spatializer using lightweight built-in FOA fallback. Put FOA wav files under StreamingAssets/HiFiHARP to use the dataset.");
     }
 
-    void BuildFromFoaWav(SpatialAudioWav.AudioData audio)
+    KernelSet BuildFromFoaWav(SpatialAudioWav.AudioData audio)
     {
         int outputRate = Mathf.Max(1, AudioSettings.outputSampleRate);
         int frames = audio.samples.Length / audio.channels;
         int length = Mathf.Min(MaxKernelSamples, Mathf.CeilToInt(frames * outputRate / (float)audio.sampleRate));
-        wKernel = new float[length];
-        xKernel = new float[length];
-        yKernel = new float[length];
-        zKernel = new float[length];
+        var kernel = new KernelSet
+        {
+            w = new float[length],
+            x = new float[length],
+            y = new float[length],
+            z = new float[length]
+        };
 
         float step = audio.sampleRate / (float)outputRate;
         for (int i = 0; i < length; i++)
         {
             float sourceIndex = i * step;
-            wKernel[i] = ReadChannelLinear(audio, 0, sourceIndex);
-            yKernel[i] = ReadChannelLinear(audio, 1, sourceIndex);
-            zKernel[i] = ReadChannelLinear(audio, 2, sourceIndex);
-            xKernel[i] = ReadChannelLinear(audio, 3, sourceIndex);
+            kernel.w[i] = ReadChannelLinear(audio, 0, sourceIndex);
+            kernel.y[i] = ReadChannelLinear(audio, 1, sourceIndex);
+            kernel.z[i] = ReadChannelLinear(audio, 2, sourceIndex);
+            kernel.x[i] = ReadChannelLinear(audio, 3, sourceIndex);
         }
 
-        NormalizeKernels();
+        NormalizeKernel(ref kernel);
+        return kernel;
     }
 
     void BuildFallbackFoaRoom()
     {
         int sr = Mathf.Max(1, AudioSettings.outputSampleRate);
-        int length = Mathf.Min(MaxKernelSamples, Mathf.RoundToInt(sr * 0.16f));
+        int length = Mathf.Min(MaxKernelSamples, Mathf.RoundToInt(sr * 0.12f));
         wKernel = new float[length];
         xKernel = new float[length];
         yKernel = new float[length];
         zKernel = new float[length];
 
-        AddImpulse(wKernel, 0, 0.42f);
-        AddImpulse(xKernel, Mathf.RoundToInt(sr * 0.002f), 0.18f);
-        AddImpulse(yKernel, Mathf.RoundToInt(sr * 0.0035f), 0.14f);
-        AddImpulse(wKernel, Mathf.RoundToInt(sr * 0.019f), 0.24f);
-        AddImpulse(xKernel, Mathf.RoundToInt(sr * 0.027f), -0.16f);
-        AddImpulse(yKernel, Mathf.RoundToInt(sr * 0.041f), 0.13f);
+        AddImpulse(wKernel, 0, 0.3f);
+        AddImpulse(xKernel, Mathf.RoundToInt(sr * 0.002f), 0.11f);
+        AddImpulse(yKernel, Mathf.RoundToInt(sr * 0.0035f), 0.1f);
+        AddImpulse(wKernel, Mathf.RoundToInt(sr * 0.018f), 0.16f);
+        AddImpulse(xKernel, Mathf.RoundToInt(sr * 0.031f), -0.1f);
+        AddImpulse(yKernel, Mathf.RoundToInt(sr * 0.044f), 0.08f);
 
-        for (int i = Mathf.RoundToInt(sr * 0.052f); i < length; i++)
+        for (int i = Mathf.RoundToInt(sr * 0.055f); i < length; i += 83)
         {
             float t = i / (float)sr;
-            float decay = Mathf.Exp(-t * 11f) * 0.08f;
+            float decay = Mathf.Exp(-t * 12f) * 0.045f;
             wKernel[i] += Mathf.Sin(i * 0.071f) * decay;
-            xKernel[i] += Mathf.Sin(i * 0.049f + 1.7f) * decay * 0.45f;
-            yKernel[i] += Mathf.Sin(i * 0.061f + 0.9f) * decay * 0.45f;
+            xKernel[i] += Mathf.Sin(i * 0.049f + 1.7f) * decay * 0.5f;
+            yKernel[i] += Mathf.Sin(i * 0.061f + 0.9f) * decay * 0.5f;
         }
+
+        rirKernels = new[]
+        {
+            new KernelSet { w = wKernel, x = xKernel, y = yKernel, z = zKernel }
+        };
     }
 
-    void UpdateStereoKernels(bool force)
+    void UpdateSparseTaps(bool force)
     {
-        Vector3 local = GetListenerRelativeDirection();
-        int bucket = Mathf.RoundToInt(Mathf.Atan2(local.x, local.z) * 16f);
-        if (!force && bucket == lastDirectionBucket)
+        Vector3 world;
+        Vector3 local = GetListenerRelativeDirection(out world);
+        targetSide = Mathf.Clamp(local.x, -1f, 1f);
+        targetFront = Mathf.Clamp(local.z, -1f, 1f);
+        float distance = world.magnitude;
+        float distance01 = Mathf.Clamp01((distance - 35f) / 620f);
+        targetDistanceGain = Mathf.Lerp(1.08f, 0.68f, distance01);
+        targetRoomDistanceGain = Mathf.Lerp(0.82f, 1.42f, distance01);
+        int bucket = Mathf.RoundToInt(Mathf.Atan2(local.x, local.z) * 4f);
+        int kernelIndex = SelectKernelIndex();
+        if (!force && bucket == lastDirectionBucket && kernelIndex == lastKernelIndex)
             return;
 
         lastDirectionBucket = bucket;
-        int n = wKernel.Length;
-        var l = new float[n];
-        var r = new float[n];
+        lastKernelIndex = kernelIndex;
+        ApplyKernel(kernelIndex);
+        float front = Mathf.Clamp(local.z, -1f, 1f) * 0.85f;
+        float side = Mathf.Clamp(local.x, -1f, 1f) * 0.9f;
+        float height = Mathf.Clamp(local.y, -1f, 1f) * 0.3f;
 
-        float front = Mathf.Clamp(local.z, -1f, 1f);
-        float side = Mathf.Clamp(local.x, -1f, 1f) * width;
-        float height = Mathf.Clamp(local.y, -1f, 1f) * 0.35f;
-
-        for (int i = 0; i < n; i++)
+        var candidates = new List<Tap>(MaxSparseTaps * 2);
+        int stride = Mathf.Max(1, wKernel.Length / MaxSparseTaps);
+        for (int i = 0; i < wKernel.Length; i += stride)
         {
-            float omni = wKernel[i] * 0.7071f;
-            float frontBack = xKernel[i] * front;
-            float sideEnergy = yKernel[i] * side;
-            float heightEnergy = zKernel[i] * height;
-            l[i] = omni + frontBack + sideEnergy + heightEnergy;
-            r[i] = omni + frontBack - sideEnergy + heightEnergy;
+            AddCandidate(candidates, i, front, side, height);
         }
 
-        leftKernel = l;
-        rightKernel = r;
+        AddStrongestLocalMaxima(candidates, front, side, height);
+        candidates.Sort((a, b) => a.delay.CompareTo(b.delay));
+
+        if (candidates.Count > MaxSparseTaps)
+            candidates.RemoveRange(MaxSparseTaps, candidates.Count - MaxSparseTaps);
+
+        taps = candidates.ToArray();
     }
 
-    Vector3 GetListenerRelativeDirection()
+    int SelectKernelIndex()
+    {
+        if (rirKernels == null || rirKernels.Length == 0)
+            return 0;
+
+        int index = rirIndex;
+        return Mathf.Clamp(index, 0, rirKernels.Length - 1);
+    }
+
+    void ApplyKernel(int index)
+    {
+        if (rirKernels == null || rirKernels.Length == 0)
+            return;
+
+        index = Mathf.Clamp(index, 0, rirKernels.Length - 1);
+        wKernel = rirKernels[index].w;
+        xKernel = rirKernels[index].x;
+        yKernel = rirKernels[index].y;
+        zKernel = rirKernels[index].z;
+    }
+
+    void AddStrongestLocalMaxima(List<Tap> candidates, float front, float side, float height)
+    {
+        var peaks = new List<int>(MaxSparseTaps);
+        for (int i = 1; i < wKernel.Length - 1; i++)
+        {
+            float e = AbsFoa(i);
+            if (e > AbsFoa(i - 1) && e >= AbsFoa(i + 1))
+                peaks.Add(i);
+        }
+
+        peaks.Sort((a, b) => AbsFoa(b).CompareTo(AbsFoa(a)));
+        int count = Mathf.Min(MaxSparseTaps / 2, peaks.Count);
+        for (int i = 0; i < count; i++)
+            AddCandidate(candidates, peaks[i], front, side, height);
+    }
+
+    void AddCandidate(List<Tap> candidates, int index, float front, float side, float height)
+    {
+        float omni = wKernel[index] * 0.7071f;
+        float frontBack = xKernel[index] * front;
+        float sideEnergy = yKernel[index] * side;
+        float heightEnergy = zKernel[index] * height;
+        float l = omni + frontBack + sideEnergy + heightEnergy;
+        float r = omni + frontBack - sideEnergy + heightEnergy;
+        if (Mathf.Abs(l) + Mathf.Abs(r) < 0.00035f)
+            return;
+
+        candidates.Add(new Tap { delay = index, left = l, right = r });
+    }
+
+    float AbsFoa(int index)
+    {
+        return Mathf.Abs(wKernel[index]) + Mathf.Abs(xKernel[index]) + Mathf.Abs(yKernel[index]) + Mathf.Abs(zKernel[index]);
+    }
+
+    float ReadRingDelay(int delay)
+    {
+        int idx = ringIndex - delay;
+        while (idx < 0) idx += RingSize;
+        return ring[idx & (RingSize - 1)];
+    }
+
+    Vector3 GetListenerRelativeDirection(out Vector3 world)
     {
         if (listener == null)
             listener = FindAnyObjectByType<AudioListener>()?.transform;
 
         if (listener == null)
+        {
+            world = transform.position;
             return transform.position.normalized;
+        }
 
-        Vector3 world = transform.position - listener.position;
+        world = transform.position - listener.position;
         if (world.sqrMagnitude < 0.0001f)
             return Vector3.forward;
 
@@ -180,25 +319,25 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
         return Mathf.Lerp(a, b, t);
     }
 
-    void NormalizeKernels()
+    void NormalizeKernel(ref KernelSet kernel)
     {
         float peak = 0f;
-        for (int i = 0; i < wKernel.Length; i++)
+        for (int i = 0; i < kernel.w.Length; i++)
         {
-            peak = Mathf.Max(peak, Mathf.Abs(wKernel[i]));
-            peak = Mathf.Max(peak, Mathf.Abs(xKernel[i]));
-            peak = Mathf.Max(peak, Mathf.Abs(yKernel[i]));
-            peak = Mathf.Max(peak, Mathf.Abs(zKernel[i]));
+            peak = Mathf.Max(peak, Mathf.Abs(kernel.w[i]));
+            peak = Mathf.Max(peak, Mathf.Abs(kernel.x[i]));
+            peak = Mathf.Max(peak, Mathf.Abs(kernel.y[i]));
+            peak = Mathf.Max(peak, Mathf.Abs(kernel.z[i]));
         }
 
         if (peak < 0.0001f)
             return;
 
-        float gain = 0.38f / peak;
-        Scale(wKernel, gain);
-        Scale(xKernel, gain);
-        Scale(yKernel, gain);
-        Scale(zKernel, gain);
+        float gain = 0.28f / peak;
+        Scale(kernel.w, gain);
+        Scale(kernel.x, gain);
+        Scale(kernel.y, gain);
+        Scale(kernel.z, gain);
     }
 
     static void AddImpulse(float[] kernel, int index, float value)
