@@ -6,8 +6,8 @@ using UnityEditor.Build.Reporting;
 
 public static class MobileBuild
 {
-    const string AndroidOutput = "build/android/Solarmix.apk";
-    const string IOSOutput = "build/ios-audio8";
+    const string AndroidOutput = "build/android/SolarmixPhysical.apk";
+    const string IOSOutput = "build/ios-physical";
 
     public static void BuildAndroid()
     {
@@ -58,9 +58,9 @@ public static class MobileBuild
 
     static void ApplyPlayerVersion()
     {
-        PlayerSettings.bundleVersion = "0.3.7";
+        PlayerSettings.bundleVersion = "0.4.0";
         PlayerSettings.iOS.buildNumber = DateTime.UtcNow.ToString("yyyyMMddHHmm");
-        PlayerSettings.productName = "Solarmix Audio8";
+        PlayerSettings.productName = "Solarmix Physical";
     }
 
     static void ExitWithReport(BuildReport report)

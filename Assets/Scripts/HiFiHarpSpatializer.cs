@@ -27,9 +27,9 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
         public float[] z;
     }
 
-    [Range(0f, 1f)] public float roomAmount = 0.76f;
-    [Range(0f, 1f)] public float directAmount = 0.72f;
-    [Range(0f, 1f)] public float width = 1f;
+    [Range(0f, 1f)] public float roomAmount = 0.34f;
+    [Range(0f, 1f)] public float directAmount = 0.96f;
+    [Range(0f, 1.5f)] public float width = 1.25f;
     public int rirIndex;
 
     float[] wKernel;
@@ -76,15 +76,20 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
         cachedRoomDistanceGain += (targetRoomDistanceGain - cachedRoomDistanceGain) * 0.0011f;
 
         float side = cachedSide;
-        int itdSamples = Mathf.RoundToInt(Mathf.Abs(side) * width * 36f);
+        int itdSamples = Mathf.RoundToInt(Mathf.Abs(side) * width * 64f);
         float leftDirect = side > 0f ? ReadRingDelay(itdSamples) : mono;
         float rightDirect = side < 0f ? ReadRingDelay(itdSamples) : mono;
 
-        float pan = Mathf.Clamp(side * width * 1.18f, -0.98f, 0.98f);
+        float pan = Mathf.Clamp(side * width * 1.55f, -0.99f, 0.99f);
         float angle = (pan + 1f) * Mathf.PI * 0.25f;
         float leftGain = Mathf.Cos(angle);
         float rightGain = Mathf.Sin(angle);
         float frontPresence = Mathf.Lerp(0.82f, 1.06f, Mathf.Clamp01((cachedFront + 1f) * 0.5f));
+        float shadow = Mathf.Clamp01(Mathf.Abs(side) * width);
+        if (side > 0f)
+            leftGain *= Mathf.Lerp(1f, 0.58f, shadow);
+        else if (side < 0f)
+            rightGain *= Mathf.Lerp(1f, 0.58f, shadow);
 
         float l = leftDirect * directAmount * cachedDistanceGain * frontPresence * leftGain;
         float r = rightDirect * directAmount * cachedDistanceGain * frontPresence * rightGain;
@@ -209,8 +214,8 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
         targetHeight = Mathf.Clamp(local.y, -1f, 1f);
         float distance = world.magnitude;
         float distance01 = Mathf.Clamp01((distance - 35f) / 620f);
-        targetDistanceGain = Mathf.Lerp(1.12f, 0.86f, distance01);
-        targetRoomDistanceGain = Mathf.Lerp(0.9f, 1.58f, distance01);
+        targetDistanceGain = Mathf.Lerp(1.35f, 1.08f, distance01);
+        targetRoomDistanceGain = Mathf.Lerp(0.42f, 0.86f, distance01);
         int kernelIndex = SelectKernelIndex();
         if (!force && kernelIndex == lastKernelIndex)
             return;

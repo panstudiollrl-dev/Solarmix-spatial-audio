@@ -7,7 +7,7 @@ using UnityEngine.EventSystems;
 
 public class SolarSystemUI : MonoBehaviour
 {
-    const string UiBuildLabel = "planet voices v0.3.7";
+    const string UiBuildLabel = "physical voices v0.4.0";
 
     static readonly Color PanelColor = new Color(0.015f, 0.024f, 0.05f, 0.9f);
     static readonly Color CardColor = new Color(0.025f, 0.04f, 0.078f, 0.88f);
@@ -271,7 +271,7 @@ public class SolarSystemUI : MonoBehaviour
 
         AddManualText(card.transform, planet.planetName, 15, col, true,
             new Vector2(28f, -8f), new Vector2(152f, 24f), TextAlignmentOptions.Left);
-        AddManualText(card.transform, Mathf.RoundToInt(synth.carrierNote) + " Hz  " + planet.trajectoryType,
+        AddManualText(card.transform, synth.ModelLabel + "  " + planet.trajectoryType,
             8, TextDim, false, new Vector2(28f, -31f), new Vector2(152f, 14f), TextAlignmentOptions.Left);
 
         var togGO = AddManualButton(card.transform, "Tog", planet.isActive ? "ON" : "MUTE",
@@ -336,13 +336,15 @@ public class SolarSystemUI : MonoBehaviour
         vlg.childForceExpandWidth = true;
         vlg.childForceExpandHeight = false;
 
+        AddModelSummary(detail.transform, synth);
         MakeSliderRow(detail.transform, "Level", 0f, 2.5f, synth.volumeScale, v => synth.volumeScale = v);
         MakeOrbitRow(detail.transform, planet);
         MakeSliderRow(detail.transform, "Speed", -10f, 10f, planet.baseSpeed, v => planet.baseSpeed = v);
         MakeSliderRow(detail.transform, "Tilt", -45f, 45f, planet.inclination, v => planet.SetInclination(v));
-        MakeSliderRow(detail.transform, "Pitch", 40f, 500f, synth.carrierNote, v => synth.carrierNote = v);
-        MakeSliderRow(detail.transform, "Color", 0f, 10f, synth.modIndex, v => synth.modIndex = v);
-        MakeSliderRow(detail.transform, "Drift", 0f, 5f, synth.lfoRate, v => synth.lfoRate = v);
+        MakeSliderRow(detail.transform, "Rate", 0f, 5f, synth.lfoRate, v => synth.lfoRate = v);
+        MakeSliderRow(detail.transform, "Depth", 40f, 500f, synth.carrierNote, v => synth.carrierNote = v);
+        MakeSliderRow(detail.transform, "Energy", 0f, 10f, synth.modIndex, v => synth.modIndex = v);
+        MakeSliderRow(detail.transform, "Material", 0.5f, 8f, synth.modRatio, v => synth.modRatio = v);
         MakeToggleRow(detail.transform, "Pulse", synth.pulseEnabled, v => synth.pulseEnabled = v);
 
         content.sizeDelta = new Vector2(0f, y + 760f);
@@ -781,7 +783,7 @@ public class SolarSystemUI : MonoBehaviour
         nameTMP.overflowMode = TextOverflowModes.Ellipsis;
         nameTMP.gameObject.AddComponent<LayoutElement>().preferredHeight = IsPhoneLayout() ? 22 : 26;
 
-        var metaTMP = MakeTMP(nameGO.transform, Mathf.RoundToInt(synth.carrierNote) + " Hz  /  " + planet.trajectoryType,
+        var metaTMP = MakeTMP(nameGO.transform, synth.ModelLabel + "  /  " + planet.trajectoryType,
             IsPhoneLayout() ? 9 : 11, TextDim);
         metaTMP.alignment = TextAlignmentOptions.Left;
         metaTMP.enableWordWrapping = false;
@@ -845,6 +847,7 @@ public class SolarSystemUI : MonoBehaviour
         detailGO.SetActive(false);
         planetDetails.Add(detailGO);
 
+        AddModelSummary(detailGO.transform, synth);
         MakeSliderRow(detailGO.transform, "Level",
             0f, 2.5f, synth.volumeScale, v => synth.volumeScale = v);
         MakeOrbitRow(detailGO.transform, planet);
@@ -852,15 +855,14 @@ public class SolarSystemUI : MonoBehaviour
             -10f, 10f, planet.baseSpeed, v => planet.baseSpeed = v);
         MakeSliderRow(detailGO.transform, "Tilt",
             -45f, 45f, planet.inclination, v => planet.SetInclination(v));
-        MakeSliderRow(detailGO.transform, "Pitch",
-            40f, 500f, synth.carrierNote, v => synth.carrierNote = v);
-        MakeOscRow(detailGO.transform, synth);
-        MakeSliderRow(detailGO.transform, "Ratio",
-            0.5f, 8f, synth.modRatio, v => synth.modRatio = v);
-        MakeSliderRow(detailGO.transform, "Color",
-            0f, 10f, synth.modIndex, v => synth.modIndex = v);
-        MakeSliderRow(detailGO.transform, "Drift",
+        MakeSliderRow(detailGO.transform, "Rate",
             0f, 5f, synth.lfoRate, v => synth.lfoRate = v);
+        MakeSliderRow(detailGO.transform, "Depth",
+            40f, 500f, synth.carrierNote, v => synth.carrierNote = v);
+        MakeSliderRow(detailGO.transform, "Energy",
+            0f, 10f, synth.modIndex, v => synth.modIndex = v);
+        MakeSliderRow(detailGO.transform, "Material",
+            0.5f, 8f, synth.modRatio, v => synth.modRatio = v);
         MakeToggleRow(detailGO.transform, "Pulse",
             synth.pulseEnabled, v => synth.pulseEnabled = v);
         MakeSliderRow(detailGO.transform, "Pulse Hz",
@@ -1480,6 +1482,31 @@ public class SolarSystemUI : MonoBehaviour
                     btnImgs[j].color = (j == idx) ? teal : dark;
             });
         }
+    }
+
+    void AddModelSummary(Transform parent, FMSynthesizer synth)
+    {
+        var go = new GameObject("ModelSummary");
+        go.transform.SetParent(parent, false);
+        var le = go.AddComponent<LayoutElement>();
+        le.preferredHeight = 34;
+        le.minHeight = 34;
+
+        var img = go.AddComponent<Image>();
+        img.sprite = roundedSprite;
+        img.type = Image.Type.Sliced;
+        img.color = new Color(0.035f, 0.065f, 0.1f, 0.82f);
+
+        var tmp = MakeTMP(go.transform, synth.ModelLabel, IsPhoneLayout() ? 13 : 15, Accent, true);
+        tmp.alignment = TextAlignmentOptions.Center;
+        tmp.verticalAlignment = VerticalAlignmentOptions.Middle;
+        tmp.enableWordWrapping = false;
+        tmp.overflowMode = TextOverflowModes.Ellipsis;
+        var rt = tmp.GetComponent<RectTransform>();
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = new Vector2(8f, 0f);
+        rt.offsetMax = new Vector2(-8f, 0f);
     }
 
     void MakeOscRow(Transform parent, FMSynthesizer synth)
