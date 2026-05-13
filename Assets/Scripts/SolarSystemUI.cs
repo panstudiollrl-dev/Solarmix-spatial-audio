@@ -7,7 +7,7 @@ using UnityEngine.EventSystems;
 
 public class SolarSystemUI : MonoBehaviour
 {
-    const string UiBuildLabel = "asmr neural soundscape v0.3.6";
+    const string UiBuildLabel = "planet voices v0.3.7";
 
     static readonly Color PanelColor = new Color(0.015f, 0.024f, 0.05f, 0.9f);
     static readonly Color CardColor = new Color(0.025f, 0.04f, 0.078f, 0.88f);
@@ -138,7 +138,7 @@ public class SolarSystemUI : MonoBehaviour
             new Vector2(14f, -6f), new Vector2(220f, 26f), TextAlignmentOptions.Left);
         AddManualText(header.transform, UiBuildLabel, 9, TextDim, false,
             new Vector2(14f, -30f), new Vector2(220f, 16f), TextAlignmentOptions.Left);
-        AddManualText(header.transform, "AUDIO7", 14, Accent, true,
+        AddManualText(header.transform, "AUDIO8", 14, Accent, true,
             new Vector2(300f, -14f), new Vector2(80f, 24f), TextAlignmentOptions.Right);
         y += 54f + gap;
 
@@ -336,7 +336,7 @@ public class SolarSystemUI : MonoBehaviour
         vlg.childForceExpandWidth = true;
         vlg.childForceExpandHeight = false;
 
-        MakeSliderRow(detail.transform, "Level", 0f, 1f, synth.volumeScale, v => synth.volumeScale = v);
+        MakeSliderRow(detail.transform, "Level", 0f, 2.5f, synth.volumeScale, v => synth.volumeScale = v);
         MakeOrbitRow(detail.transform, planet);
         MakeSliderRow(detail.transform, "Speed", -10f, 10f, planet.baseSpeed, v => planet.baseSpeed = v);
         MakeSliderRow(detail.transform, "Tilt", -45f, 45f, planet.inclination, v => planet.SetInclination(v));
@@ -846,7 +846,7 @@ public class SolarSystemUI : MonoBehaviour
         planetDetails.Add(detailGO);
 
         MakeSliderRow(detailGO.transform, "Level",
-            0f, 1f, synth.volumeScale, v => synth.volumeScale = v);
+            0f, 2.5f, synth.volumeScale, v => synth.volumeScale = v);
         MakeOrbitRow(detailGO.transform, planet);
         MakeSliderRow(detailGO.transform, "Speed",
             -10f, 10f, planet.baseSpeed, v => planet.baseSpeed = v);

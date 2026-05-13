@@ -7,14 +7,14 @@ using UnityEditor.Build.Reporting;
 public static class MobileBuild
 {
     const string AndroidOutput = "build/android/Solarmix.apk";
-    const string IOSOutput = "build/ios-audio7";
+    const string IOSOutput = "build/ios-audio8";
 
     public static void BuildAndroid()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(AndroidOutput));
         ApplyPlayerVersion();
         PlayerSettings.SetScriptingDefineSymbols(NamedBuildTarget.Android, "HIFI_HARP_SPATIALIZER");
-        PlayerSettings.applicationIdentifier = "com.merry.solarmix.audio7";
+        PlayerSettings.applicationIdentifier = "com.merry.solarmix.audio8";
         EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Android, BuildTarget.Android);
 
         var report = BuildPipeline.BuildPlayer(GetEnabledScenes(), AndroidOutput, BuildTarget.Android,
@@ -27,7 +27,7 @@ public static class MobileBuild
         Directory.CreateDirectory(Path.GetDirectoryName(AndroidOutput));
         ApplyPlayerVersion();
         PlayerSettings.SetScriptingDefineSymbols(NamedBuildTarget.Android, "HIFI_HARP_SPATIALIZER");
-        PlayerSettings.applicationIdentifier = "com.merry.solarmix.audio7";
+        PlayerSettings.applicationIdentifier = "com.merry.solarmix.audio8";
         EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Android, BuildTarget.Android);
 
         var report = BuildPipeline.BuildPlayer(GetEnabledScenes(), AndroidOutput, BuildTarget.Android,
@@ -40,7 +40,7 @@ public static class MobileBuild
         Directory.CreateDirectory(IOSOutput);
         ApplyPlayerVersion();
         PlayerSettings.SetScriptingDefineSymbols(NamedBuildTarget.iOS, "HIFI_HARP_SPATIALIZER");
-        PlayerSettings.applicationIdentifier = "com.merry.solarmix.audio7";
+        PlayerSettings.applicationIdentifier = "com.merry.solarmix.audio8";
         PlayerSettings.iOS.appleEnableAutomaticSigning = true;
         EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.iOS, BuildTarget.iOS);
 
@@ -58,9 +58,9 @@ public static class MobileBuild
 
     static void ApplyPlayerVersion()
     {
-        PlayerSettings.bundleVersion = "0.3.6";
+        PlayerSettings.bundleVersion = "0.3.7";
         PlayerSettings.iOS.buildNumber = DateTime.UtcNow.ToString("yyyyMMddHHmm");
-        PlayerSettings.productName = "Solarmix Audio7";
+        PlayerSettings.productName = "Solarmix Audio8";
     }
 
     static void ExitWithReport(BuildReport report)

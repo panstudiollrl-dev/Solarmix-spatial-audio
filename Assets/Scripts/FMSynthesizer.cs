@@ -24,7 +24,7 @@ public class FMSynthesizer : MonoBehaviour
     [Header("Master")]
     public int planetIndex = 1;
     [Range(0f, 1f)] public float masterVolume = 1f;
-    [Range(0f, 1f)] public float volumeScale = 1f;
+    [Range(0f, 2.5f)] public float volumeScale = 1f;
 
     [Header("Oscillator")]
     public OscType oscType = OscType.Sine;
@@ -194,8 +194,8 @@ public class FMSynthesizer : MonoBehaviour
 
     static readonly float[] PlanetVolumes =
     {
-        0.58f, 0.48f, 0.54f, 0.46f, 0.54f,
-        0.5f, 0.42f, 0.68f, 0.4f
+        0.88f, 0.95f, 0.82f, 0.78f, 1.08f,
+        0.86f, 0.8f, 1.12f, 1.18f
     };
 
     static readonly OscType[] PlanetOscTypes =
@@ -206,50 +206,50 @@ public class FMSynthesizer : MonoBehaviour
 
     static readonly float[] PlanetStreamDensity =
     {
-        0.94f, 0.42f, 0.78f, 0.24f, 0.34f,
-        0.58f, 0.66f, 0.24f, 0.48f
+        0.92f, 0.22f, 0.86f, 0.18f, 0.16f,
+        0.52f, 0.34f, 0.2f, 0.42f
     };
 
     static readonly float[] PlanetStreamBrightness =
     {
-        0.86f, 0.36f, 0.62f, 0.44f, 0.24f,
-        0.54f, 0.9f, 0.22f, 0.72f
+        0.92f, 0.2f, 0.56f, 0.32f, 0.12f,
+        0.62f, 0.78f, 0.16f, 0.7f
     };
 
     static readonly float[] PlanetStreamGain =
     {
-        0.82f, 0.44f, 0.68f, 0.26f, 0.36f,
-        0.48f, 0.42f, 0.38f, 0.34f
+        0.9f, 0.22f, 1.08f, 0.18f, 0.18f,
+        0.48f, 0.26f, 0.22f, 0.42f
     };
 
     static readonly float[] PlanetCavityGain =
     {
-        1.1f, 0.58f, 0.92f, 0.58f, 0.48f,
-        0.78f, 0.94f, 0.62f, 0.64f
+        1.28f, 0.28f, 1.34f, 0.62f, 0.22f,
+        0.84f, 0.98f, 0.38f, 0.72f
     };
 
     static readonly float[] PlanetDeepGain =
     {
-        0.08f, 0.3f, 0.16f, 0.12f, 0.68f,
-        0.22f, 0.08f, 0.9f, 0.12f
+        0.04f, 0.44f, 0.18f, 0.08f, 1.08f,
+        0.18f, 0.06f, 1.16f, 0.08f
     };
 
     static readonly float[] PlanetDripGain =
     {
-        0.1f, 0.04f, 0.08f, 0.86f, 0.05f,
-        0.54f, 0.14f, 0.03f, 0.36f
+        0.12f, 0.02f, 0.16f, 1.12f, 0.03f,
+        0.62f, 0.08f, 0.04f, 0.68f
     };
 
     static readonly float[] PlanetBodyGain =
     {
-        0.0f, 0.018f, 0.014f, 0.0f, 0.028f,
-        0.02f, 0.0f, 0.045f, 0.0f
+        0.0f, 0.08f, 0.018f, 0.0f, 0.12f,
+        0.02f, 0.0f, 0.08f, 0.0f
     };
 
     static readonly float[] PlanetChimeGain =
     {
-        0.05f, 0.03f, 0.06f, 0.04f, 0.02f,
-        0.32f, 0.46f, 0.012f, 0.08f
+        0.04f, 0.18f, 0.04f, 0.02f, 0.0f,
+        0.42f, 0.64f, 0.0f, 0.24f
     };
 
     static readonly float[] PlanetBirdGain =
@@ -260,26 +260,26 @@ public class FMSynthesizer : MonoBehaviour
 
     static readonly float[] PlanetWhaleGain =
     {
-        0.0f, 0.16f, 0.08f, 0.0f, 0.22f,
-        0.06f, 0.0f, 0.34f, 0.0f
+        0.0f, 0.22f, 0.03f, 0.0f, 0.56f,
+        0.06f, 0.0f, 0.62f, 0.0f
     };
 
     static readonly float[] PlanetResonatorSoftness =
     {
-        0.78f, 0.96f, 0.9f, 0.68f, 0.98f,
-        0.74f, 0.5f, 0.98f, 0.82f
+        0.72f, 0.98f, 0.82f, 0.62f, 0.99f,
+        0.76f, 0.48f, 0.99f, 0.7f
     };
 
     static readonly float[] PlanetCavityLow =
     {
-        620f, 220f, 340f, 880f, 160f,
-        420f, 980f, 180f, 700f
+        720f, 180f, 260f, 900f, 120f,
+        420f, 1020f, 140f, 760f
     };
 
     static readonly float[] PlanetCavityHigh =
     {
-        5200f, 2200f, 3600f, 3100f, 1400f,
-        4200f, 6500f, 2400f, 4800f
+        5600f, 900f, 3200f, 2900f, 700f,
+        4300f, 6800f, 850f, 5000f
     };
 
     static readonly float[] PlanetCavityDecay =
@@ -467,23 +467,23 @@ public class FMSynthesizer : MonoBehaviour
         switch (layer)
         {
             case SoundscapeLayer.PebbleRun:
-                return stream * 0.88 + drips * 0.24 + deep * 0.05 + chimes * 0.16;
+                return stream * 1.05 + drips * 0.18 + deep * 0.02 + chimes * 0.08;
             case SoundscapeLayer.WarmBrook:
-                return stream * 0.58 + deep * 0.25 + wind * 0.04 + body * 0.72 + drips * 0.2 + birds * 0.06 + whale * 0.22;
+                return body * 1.15 + deep * 0.42 + whale * 0.3 + chimes * 0.22 + stream * 0.18;
             case SoundscapeLayer.EarthCreek:
-                return stream * 0.66 + deep * 0.14 + drips * 0.26 + body * 0.58 + birds * 0.12 + chimes * 0.1;
+                return stream * 1.18 + drips * 0.3 + deep * 0.16 + body * 0.28 + birds * 0.1;
             case SoundscapeLayer.CaveDrops:
-                return drips * 1.25 + stream * 0.2 + deep * 0.1 + chimes * 0.16;
+                return drips * 1.42 + stream * 0.16 + deep * 0.06 + chimes * 0.08;
             case SoundscapeLayer.WideRiver:
-                return deep * 0.78 + stream * 0.5 + body * 0.74 + drips * 0.12 + whale * 0.34;
+                return deep * 1.02 + body * 1.18 + whale * 0.72 + stream * 0.16;
             case SoundscapeLayer.RingSpring:
-                return stream * 0.34 + drips * 0.78 + chimes * 0.86 + deep * 0.1 + birds * 0.04;
+                return chimes * 0.98 + drips * 0.66 + stream * 0.34 + deep * 0.08;
             case SoundscapeLayer.GlassRill:
-                return stream * 0.28 + chimes * 1.12 + deep * 0.04 + drips * 0.2;
+                return chimes * 1.24 + stream * 0.18 + drips * 0.12 + deep * 0.03;
             case SoundscapeLayer.DeepCurrent:
-                return deep * 0.98 + stream * 0.46 + body * 0.56 + wind * 0.04 + drips * 0.08 + whale * 0.52;
+                return deep * 1.12 + body * 0.74 + whale * 0.82 + stream * 0.18 + wind * 0.03;
             case SoundscapeLayer.MistRain:
-                return drips * 0.92 + stream * 0.3 + wind * 0.06 + deep * 0.08 + chimes * 0.22;
+                return drips * 1.02 + chimes * 0.34 + stream * 0.42 + deep * 0.04;
             default:
                 return stream + deep + drips;
         }
@@ -514,8 +514,8 @@ public class FMSynthesizer : MonoBehaviour
         float rippleWhite = NextBipolar();
         deepBand += (rippleWhite - deepBand) * (0.008f + delta * 0.018f + agitation * 0.01f);
         deepBandSlow += (deepBand - deepBandSlow) * (0.002f + agitation * 0.003f);
-        float slowPressure = waterLow * (0.14f + delta * 0.12f + agitation * 0.04f);
-        float audibleCurrent = (deepBand - deepBandSlow) * (0.025f + delta * 0.055f + deepGain * 0.03f);
+        float slowPressure = waterLow * (0.18f + delta * 0.16f + agitation * 0.05f);
+        float audibleCurrent = (deepBand - deepBandSlow) * (0.03f + delta * 0.07f + deepGain * 0.04f);
         return slowPressure + audibleCurrent;
     }
 
@@ -547,11 +547,11 @@ public class FMSynthesizer : MonoBehaviour
         fizzBand += (white - fizzBand) * (0.045f + beta * 0.075f);
         fizzSlow += (fizzBand - fizzSlow) * (0.012f + beta * 0.018f);
 
-        double bandpassBody = (waterBand - waterBandSlow) * (0.022 + beta * 0.048 + theta * 0.014);
-        double surfaceFizz = (fizzBand - fizzSlow) * (0.0009 + beta * 0.0026) * Mathf.Lerp(0.28f, 0.62f, streamDensity);
+        double bandpassBody = (waterBand - waterBandSlow) * (0.03 + beta * 0.065 + theta * 0.018);
+        double surfaceFizz = (fizzBand - fizzSlow) * (0.0008 + beta * 0.002) * Mathf.Lerp(0.24f, 0.54f, streamDensity);
         hydroCrackleColor += (white - hydroCrackleColor) * 0.48;
         hydroCrackleEnv *= Math.Exp(-dt / 0.018);
-        double crackle = hydroCrackleColor * hydroCrackleEnv * (0.006 + beta * 0.018 + theta * 0.008);
+        double crackle = hydroCrackleColor * hydroCrackleEnv * (0.004 + beta * 0.013 + theta * 0.006);
         double bed = bandpassBody + surfaceFizz + crackle;
 
         crackleTimer -= dt;
@@ -581,7 +581,7 @@ public class FMSynthesizer : MonoBehaviour
             cavities += Math.Sin(cavityPhase[i] * TwoPi) * cavityEnv[i];
         }
 
-        double cavityTone = Mathf.Lerp(0.42f, 0.92f, 1f - resonatorSoftness);
+        double cavityTone = Mathf.Lerp(0.56f, 1.08f, 1f - resonatorSoftness);
         return bed + cavities * cavityGain * cavityTone;
     }
 

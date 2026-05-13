@@ -13,8 +13,10 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
     struct Tap
     {
         public int delay;
-        public float left;
-        public float right;
+        public float omni;
+        public float front;
+        public float side;
+        public float height;
     }
 
     struct KernelSet
@@ -39,12 +41,13 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
     readonly float[] ring = new float[RingSize];
     int ringIndex;
     Transform listener;
-    int lastDirectionBucket = int.MinValue;
     int lastKernelIndex = -1;
     float cachedSide;
     float targetSide;
     float cachedFront = 1f;
     float targetFront = 1f;
+    float cachedHeight;
+    float targetHeight;
     float cachedDistanceGain = 0.75f;
     float targetDistanceGain = 0.75f;
     float cachedRoomDistanceGain = 0.65f;
@@ -68,6 +71,7 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
 
         cachedSide += (targetSide - cachedSide) * 0.0016f;
         cachedFront += (targetFront - cachedFront) * 0.0016f;
+        cachedHeight += (targetHeight - cachedHeight) * 0.0016f;
         cachedDistanceGain += (targetDistanceGain - cachedDistanceGain) * 0.0011f;
         cachedRoomDistanceGain += (targetRoomDistanceGain - cachedRoomDistanceGain) * 0.0011f;
 
@@ -86,13 +90,20 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
         float r = rightDirect * directAmount * cachedDistanceGain * frontPresence * rightGain;
 
         var activeTaps = taps;
+        float roomFront = cachedFront * 0.85f;
+        float roomSide = cachedSide * 0.9f;
+        float roomHeight = cachedHeight * 0.3f;
         for (int i = 0; i < activeTaps.Length; i++)
         {
             int idx = ringIndex - activeTaps[i].delay;
             while (idx < 0) idx += RingSize;
             float s = ring[idx & (RingSize - 1)];
-            l += s * activeTaps[i].left * roomAmount * cachedRoomDistanceGain;
-            r += s * activeTaps[i].right * roomAmount * cachedRoomDistanceGain;
+            float omni = activeTaps[i].omni;
+            float frontBack = activeTaps[i].front * roomFront;
+            float sideEnergy = activeTaps[i].side * roomSide;
+            float heightEnergy = activeTaps[i].height * roomHeight;
+            l += s * (omni + frontBack + sideEnergy + heightEnergy) * roomAmount * cachedRoomDistanceGain;
+            r += s * (omni + frontBack - sideEnergy + heightEnergy) * roomAmount * cachedRoomDistanceGain;
         }
 
         ringIndex = (ringIndex + 1) & (RingSize - 1);
@@ -195,30 +206,26 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
         Vector3 local = GetListenerRelativeDirection(out world);
         targetSide = Mathf.Clamp(local.x, -1f, 1f);
         targetFront = Mathf.Clamp(local.z, -1f, 1f);
+        targetHeight = Mathf.Clamp(local.y, -1f, 1f);
         float distance = world.magnitude;
         float distance01 = Mathf.Clamp01((distance - 35f) / 620f);
-        targetDistanceGain = Mathf.Lerp(1.08f, 0.68f, distance01);
-        targetRoomDistanceGain = Mathf.Lerp(0.82f, 1.42f, distance01);
-        int bucket = Mathf.RoundToInt(Mathf.Atan2(local.x, local.z) * 4f);
+        targetDistanceGain = Mathf.Lerp(1.12f, 0.86f, distance01);
+        targetRoomDistanceGain = Mathf.Lerp(0.9f, 1.58f, distance01);
         int kernelIndex = SelectKernelIndex();
-        if (!force && bucket == lastDirectionBucket && kernelIndex == lastKernelIndex)
+        if (!force && kernelIndex == lastKernelIndex)
             return;
 
-        lastDirectionBucket = bucket;
         lastKernelIndex = kernelIndex;
         ApplyKernel(kernelIndex);
-        float front = Mathf.Clamp(local.z, -1f, 1f) * 0.85f;
-        float side = Mathf.Clamp(local.x, -1f, 1f) * 0.9f;
-        float height = Mathf.Clamp(local.y, -1f, 1f) * 0.3f;
 
         var candidates = new List<Tap>(MaxSparseTaps * 2);
         int stride = Mathf.Max(1, wKernel.Length / MaxSparseTaps);
         for (int i = 0; i < wKernel.Length; i += stride)
         {
-            AddCandidate(candidates, i, front, side, height);
+            AddCandidate(candidates, i);
         }
 
-        AddStrongestLocalMaxima(candidates, front, side, height);
+        AddStrongestLocalMaxima(candidates);
         candidates.Sort((a, b) => a.delay.CompareTo(b.delay));
 
         if (candidates.Count > MaxSparseTaps)
@@ -248,7 +255,7 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
         zKernel = rirKernels[index].z;
     }
 
-    void AddStrongestLocalMaxima(List<Tap> candidates, float front, float side, float height)
+    void AddStrongestLocalMaxima(List<Tap> candidates)
     {
         var peaks = new List<int>(MaxSparseTaps);
         for (int i = 1; i < wKernel.Length - 1; i++)
@@ -261,21 +268,19 @@ public class HiFiHarpSpatializer : MonoBehaviour, IPlanetSpatializer
         peaks.Sort((a, b) => AbsFoa(b).CompareTo(AbsFoa(a)));
         int count = Mathf.Min(MaxSparseTaps / 2, peaks.Count);
         for (int i = 0; i < count; i++)
-            AddCandidate(candidates, peaks[i], front, side, height);
+            AddCandidate(candidates, peaks[i]);
     }
 
-    void AddCandidate(List<Tap> candidates, int index, float front, float side, float height)
+    void AddCandidate(List<Tap> candidates, int index)
     {
         float omni = wKernel[index] * 0.7071f;
-        float frontBack = xKernel[index] * front;
-        float sideEnergy = yKernel[index] * side;
-        float heightEnergy = zKernel[index] * height;
-        float l = omni + frontBack + sideEnergy + heightEnergy;
-        float r = omni + frontBack - sideEnergy + heightEnergy;
-        if (Mathf.Abs(l) + Mathf.Abs(r) < 0.00035f)
+        float front = xKernel[index];
+        float side = yKernel[index];
+        float height = zKernel[index];
+        if (Mathf.Abs(omni) + Mathf.Abs(front) + Mathf.Abs(side) + Mathf.Abs(height) < 0.00035f)
             return;
 
-        candidates.Add(new Tap { delay = index, left = l, right = r });
+        candidates.Add(new Tap { delay = index, omni = omni, front = front, side = side, height = height });
     }
 
     float AbsFoa(int index)
