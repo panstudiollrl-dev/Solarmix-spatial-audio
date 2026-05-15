@@ -67,6 +67,9 @@ public static class MobileBuild
         // The synthetic source table provides full spatial audio without any .npy files.
         PlayerSettings.SetScriptingDefineSymbols(NamedBuildTarget.WebGL, "MESH_RIR_SPATIALIZER");
         PlayerSettings.applicationIdentifier = "com.merry.solarmix.meshrir";
+        // Disable Brotli compression — browsers block it over plain HTTP.
+        // Uncompressed builds work with any local server (python3 -m http.server).
+        PlayerSettings.WebGL.compressionFormat = WebGLCompressionFormat.Disabled;
 
         EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.WebGL, BuildTarget.WebGL);
 
