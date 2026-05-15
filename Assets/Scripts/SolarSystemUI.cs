@@ -7,7 +7,7 @@ using UnityEngine.EventSystems;
 
 public class SolarSystemUI : MonoBehaviour
 {
-    const string UiBuildLabel = "physical voices v0.4.0";
+    const string UiBuildLabel = "MeshRIR v0.5.0";
 
     static readonly Color PanelColor = new Color(0.015f, 0.024f, 0.05f, 0.9f);
     static readonly Color CardColor = new Color(0.025f, 0.04f, 0.078f, 0.88f);
@@ -31,6 +31,13 @@ public class SolarSystemUI : MonoBehaviour
     private readonly List<(Image img, TextMeshProUGUI txt,
         PlanetOrbit planet, FMSynthesizer synth)> toggles
         = new List<(Image, TextMeshProUGUI, PlanetOrbit, FMSynthesizer)>();
+
+    // ── Solo state ──────────────────────────────────────────────────────────
+    // _soloTarget: the synth currently soloed (null = no solo active).
+    // _preSoloActives: each planet's isActive state before solo was pressed,
+    //   so that un-soloing restores exactly the prior mute/unmute pattern.
+    private FMSynthesizer _soloTarget = null;
+    private readonly List<bool> _preSoloActives = new List<bool>();
 
     private GameObject scrollPanel;
     private GameObject phoneRoot;
@@ -154,12 +161,12 @@ public class SolarSystemUI : MonoBehaviour
         outLabel.gameObject.AddComponent<LayoutElement>().preferredHeight = 14;
         AudioListener.volume = Mathf.Max(0.25f, AudioListener.volume);
         MakeLargeSlider(master.transform, 0f, 1f, AudioListener.volume, v => AudioListener.volume = v);
-        var roomLabel = MakeTMP(master.transform, "Room", 12, TextDim, true);
+        var roomLabel = MakeTMP(master.transform, "Space", 12, TextDim, true);
         roomLabel.gameObject.AddComponent<LayoutElement>().preferredHeight = 14;
         MakeLargeSlider(master.transform, 0f, 1f, 0.42f, v =>
         {
-            foreach (var sp in FindObjectsByType<HiFiHarpSpatializer>(FindObjectsInactive.Exclude))
-                sp.roomAmount = v;
+            foreach (var sp in FindObjectsByType<MeshRIRSpatializer>(FindObjectsInactive.Exclude))
+                sp.energy = v;
         });
         y += 94f + gap;
 
@@ -302,6 +309,7 @@ public class SolarSystemUI : MonoBehaviour
 
     void BuildManualPhoneTunePage(int idx)
     {
+        CameraController.Blocked = true;   // tune page always visible = always block
         foreach (Transform child in content) Destroy(child.gameObject);
         toggles.Clear();
         planetCards.Clear();
@@ -327,7 +335,7 @@ public class SolarSystemUI : MonoBehaviour
             new Vector2(14f, -32f), new Vector2(180f, 16f), TextAlignmentOptions.Left);
         y += 64f;
 
-        var detail = CreateManualCard("PhoneTuneDetail", y, 660f, CardColor);
+        var detail = CreateManualCard("PhoneTuneDetail", y, 360f, CardColor);
         var vlg = detail.AddComponent<VerticalLayoutGroup>();
         vlg.padding = new RectOffset(10, 10, 8, 8);
         vlg.spacing = 5;
@@ -337,29 +345,9 @@ public class SolarSystemUI : MonoBehaviour
         vlg.childForceExpandHeight = false;
 
         AddModelSummary(detail.transform, synth);
-        MakeSliderRow(detail.transform, "Level", 0f, 2.5f, synth.volumeScale, v => synth.volumeScale = v);
-        MakeOrbitRow(detail.transform, planet);
-        MakeSliderRow(detail.transform, "Speed", -10f, 10f, planet.baseSpeed, v => planet.baseSpeed = v);
-        MakeSliderRow(detail.transform, "Tilt",  -45f, 45f, planet.inclination, v => planet.SetInclination(v));
+        AddMeshRirTuneRows(detail.transform, synth);
 
-        // ── MeshRIR spatial tune params ──────────────────────────────────
-        // Rate     : how fast the spatial image tracks listener movement
-        //            (0 = dreamy / slow float, 1 = tight / immediate)
-        // Depth    : reverb tail length — how far back reflections reach
-        // Energy   : wet/spatial energy balance vs dry direct signal
-        // Material : surface absorption (0 = live / reflective, 1 = dead / absorptive)
-        // Density  : diffuse tail reflection density
-        var meshRir = synth.GetComponent<MeshRIRSpatializer>();
-        if (meshRir != null)
-        {
-            MakeSliderRow(detail.transform, "Rate",     0f, 1f, meshRir.rate,     v => meshRir.rate     = v);
-            MakeSliderRow(detail.transform, "Depth",    0f, 1f, meshRir.depth,    v => meshRir.depth    = v);
-            MakeSliderRow(detail.transform, "Energy",   0f, 1f, meshRir.energy,   v => meshRir.energy   = v);
-            MakeSliderRow(detail.transform, "Material", 0f, 1f, meshRir.material, v => meshRir.material = v);
-            MakeSliderRow(detail.transform, "Density",  0f, 1f, meshRir.density,  v => meshRir.density  = v);
-        }
-
-        content.sizeDelta = new Vector2(0f, y + 760f);
+        content.sizeDelta = new Vector2(0f, y + 460f);
         if (menuScroll != null)
             menuScroll.verticalNormalizedPosition = 1f;
         StartCoroutine(ForceLayoutRebuild());
@@ -372,6 +360,12 @@ public class SolarSystemUI : MonoBehaviour
 
         circleSprite  = CreateCircleSprite();
         roundedSprite = CreateRoundedRectSprite(12);
+
+        // Menu starts open — block camera immediately so first touch doesn't rotate.
+        CameraController.Blocked = true;
+
+        // Set output volume before first audio frame — Unity defaults to 1.0f.
+        AudioListener.volume = 0.55f;
 
         StartCoroutine(WaitAndBuild());
     }
@@ -695,17 +689,17 @@ public class SolarSystemUI : MonoBehaviour
         var label = MakeTMP(go.transform, "Output", IsPhoneLayout() ? 14 : 18, TextDim, true);
         label.gameObject.AddComponent<LayoutElement>().preferredHeight = IsPhoneLayout() ? 18 : 24;
 
-        AudioListener.volume = 0.35f;
+        AudioListener.volume = 0.55f;
         MakeLargeSlider(go.transform, 0f, 1f, AudioListener.volume,
             v => AudioListener.volume = v);
 
-        var roomLabel = MakeTMP(go.transform, "Room", IsPhoneLayout() ? 14 : 18, TextDim, true);
+        var roomLabel = MakeTMP(go.transform, "Space", IsPhoneLayout() ? 14 : 18, TextDim, true);
         roomLabel.gameObject.AddComponent<LayoutElement>().preferredHeight = IsPhoneLayout() ? 18 : 24;
 
         MakeLargeSlider(go.transform, 0f, 1f, 0.42f, v =>
         {
-            foreach (var sp in FindObjectsByType<HiFiHarpSpatializer>(FindObjectsInactive.Exclude))
-                sp.roomAmount = v;
+            foreach (var sp in FindObjectsByType<MeshRIRSpatializer>(FindObjectsInactive.Exclude))
+                sp.energy = v;
         });
 
         // All / None
@@ -860,27 +854,7 @@ public class SolarSystemUI : MonoBehaviour
         planetDetails.Add(detailGO);
 
         AddModelSummary(detailGO.transform, synth);
-        MakeSliderRow(detailGO.transform, "Level",
-            0f, 2.5f, synth.volumeScale, v => synth.volumeScale = v);
-        MakeOrbitRow(detailGO.transform, planet);
-        MakeSliderRow(detailGO.transform, "Speed",
-            -10f, 10f, planet.baseSpeed, v => planet.baseSpeed = v);
-        MakeSliderRow(detailGO.transform, "Tilt",
-            -45f, 45f, planet.inclination, v => planet.SetInclination(v));
-        MakeSliderRow(detailGO.transform, "Rate",
-            0f, 5f, synth.lfoRate, v => synth.lfoRate = v);
-        MakeSliderRow(detailGO.transform, "Depth",
-            40f, 500f, synth.carrierNote, v => synth.carrierNote = v);
-        MakeSliderRow(detailGO.transform, "Energy",
-            0f, 10f, synth.modIndex, v => synth.modIndex = v);
-        MakeSliderRow(detailGO.transform, "Material",
-            0.5f, 8f, synth.modRatio, v => synth.modRatio = v);
-        MakeToggleRow(detailGO.transform, "Pulse",
-            synth.pulseEnabled, v => synth.pulseEnabled = v);
-        MakeSliderRow(detailGO.transform, "Pulse Hz",
-            0.1f, 8f, synth.pulseRate, v => synth.pulseRate = v);
-        MakeSliderRow(detailGO.transform, "Decay",
-            0.01f, 0.3f, synth.pulseDecay, v => synth.pulseDecay = v);
+        AddMeshRirTuneRows(detailGO.transform, synth);
 
         // Edit button → enters edit mode for this planet
         int capturedIdx = idx;
@@ -914,8 +888,8 @@ public class SolarSystemUI : MonoBehaviour
 
         var selectedCardLE = planetCards[idx].GetComponent<LayoutElement>()
                   ?? planetCards[idx].AddComponent<LayoutElement>();
-        selectedCardLE.preferredHeight = IsPhoneLayout() ? 720 : -1;
-        selectedCardLE.minHeight = IsPhoneLayout() ? 640 : 0;
+        selectedCardLE.preferredHeight = IsPhoneLayout() ? 430 : -1;
+        selectedCardLE.minHeight = IsPhoneLayout() ? 360 : 0;
 
         // Save original content anchoring then stretch to fill viewport on large screens.
         if (!contentAnchorSaved)
@@ -959,6 +933,8 @@ public class SolarSystemUI : MonoBehaviour
     void ExitEditMode()
     {
         editingIdx = -1;
+        // Returning to list view — menu still visible, keep blocking camera.
+        CameraController.Blocked = isMenuOpen;
         listHeaderGO?.SetActive(true);
         editHeaderGO?.SetActive(false);
 
@@ -1060,6 +1036,7 @@ public class SolarSystemUI : MonoBehaviour
         {
             isMenuOpen = !isMenuOpen;
             menuPanel?.SetActive(isMenuOpen);
+            CameraController.Blocked = isMenuOpen;
             img.color = isMenuOpen
                 ? CardColor
                 : ActiveColor;
@@ -1406,14 +1383,37 @@ public class SolarSystemUI : MonoBehaviour
 
     void SoloPlanet(PlanetOrbit planet, FMSynthesizer synth)
     {
-        foreach (var t in toggles)
+        // Use manager lists as the canonical source so this works correctly even
+        // when toggles has been cleared/replaced (e.g. inside BuildManualPhoneTunePage
+        // which clears toggles and adds only a single entry for the edited planet).
+        var planets = manager.Planets;
+        var synths  = manager.Synths;
+
+        if (_soloTarget == synth)
         {
-            bool active = t.planet == planet;
-            SetPlanetActive(t.planet, t.synth, active);
-            RefreshToggleVisual(t.img, t.txt, active);
+            // ── Un-solo: restore every planet to its pre-solo active state ────
+            for (int i = 0; i < planets.Count && i < _preSoloActives.Count; i++)
+                SetPlanetActive(planets[i], synths[i], _preSoloActives[i]);
+            _soloTarget = null;
+            _preSoloActives.Clear();
+        }
+        else
+        {
+            // ── Solo: save states, mute everything except this planet ──────────
+            _preSoloActives.Clear();
+            foreach (var p in planets) _preSoloActives.Add(p.isActive);
+            _soloTarget = synth;
+            for (int i = 0; i < planets.Count; i++)
+                SetPlanetActive(planets[i], synths[i], planets[i] == planet);
+            allSelected = false;
         }
 
-        allSelected = false;
+        // Refresh whatever toggle buttons are currently in the list.
+        // In list view: all 9 card toggles. In tune page: just 1 detail toggle.
+        // Either way, planet.isActive has already been updated above.
+        foreach (var t in toggles)
+            if (t.img != null)
+                RefreshToggleVisual(t.img, t.txt, t.planet.isActive);
     }
 
     void RefreshToggleVisual(Image img, TextMeshProUGUI txt, bool active)
@@ -1519,6 +1519,106 @@ public class SolarSystemUI : MonoBehaviour
         rt.anchorMax = Vector2.one;
         rt.offsetMin = new Vector2(8f, 0f);
         rt.offsetMax = new Vector2(-8f, 0f);
+    }
+
+    void AddMeshRirTuneRows(Transform parent, FMSynthesizer synth)
+    {
+        var meshRir = synth.GetComponent<MeshRIRSpatializer>();
+        var planet  = synth.GetComponent<PlanetOrbit>();
+
+        // ── ORBIT ─────────────────────────────────────────────────────────────
+        if (planet != null)
+        {
+            AddSectionLabel(parent, "ORBIT");
+            // Speed: negative = reverse direction; sign encodes direction
+            MakeSliderRow(parent, "Speed", -8f, 8f, planet.baseSpeed,
+                v => planet.baseSpeed = v);
+            MakeSliderRow(parent, "Inclin", -30f, 90f, planet.inclination,
+                v => planet.SetInclination(v));
+            MakeOrbitRow(parent, planet);
+        }
+
+        // ── SPACE ─────────────────────────────────────────────────────────────
+        if (meshRir != null)
+        {
+            AddSectionLabel(parent, "SPACE");
+            MakeSliderRow(parent, "Reverb",  0f, 1f, meshRir.energy,         v => meshRir.energy         = v);
+            MakeSliderRow(parent, "Room",    0f, 1f, meshRir.depth,          v => meshRir.depth          = v);
+            MakeSliderRow(parent, "Damp",    0f, 1f, meshRir.material,       v => meshRir.material       = v);
+            MakeSliderRow(parent, "Density", 0f, 1f, meshRir.density,        v => meshRir.density        = v);
+            MakeSliderRow(parent, "Sense",   0f, 1f, meshRir.flySense,    v => meshRir.flySense    = v);
+            MakeSliderRow(parent, "Force",   0f, 2f, meshRir.flyStrength, v => meshRir.flyStrength = v);
+        }
+
+        // ── SOUND ─────────────────────────────────────────────────────────────
+        AddSectionLabel(parent, "SOUND");
+        AddModelSynthRows(parent, synth);
+    }
+
+    // Thin label bar between parameter groups
+    void AddSectionLabel(Transform parent, string text)
+    {
+        var go = new GameObject("SecLabel_" + text);
+        go.transform.SetParent(parent, false);
+        var le = go.AddComponent<LayoutElement>();
+        le.preferredHeight = 22; le.minHeight = 22;
+        var tmp = MakeTMP(go.transform, text, 9, TextDim, false);
+        tmp.alignment = TextAlignmentOptions.Left;
+        tmp.verticalAlignment = VerticalAlignmentOptions.Middle;
+        tmp.characterSpacing = 2f;
+        var rt = tmp.GetComponent<RectTransform>();
+        rt.anchorMin = Vector2.zero; rt.anchorMax = Vector2.one;
+        rt.offsetMin = new Vector2(4f, 0f); rt.offsetMax = new Vector2(-4f, 0f);
+    }
+
+    // Two synthesis sliders whose labels and parameter targets depend on the model.
+    void AddModelSynthRows(Transform parent, FMSynthesizer synth)
+    {
+        switch (synth.model)
+        {
+            case FMSynthesizer.PhysicalModel.Bubble:
+                MakeSliderRow(parent, "Flow",   0f, 5f, synth.lfoRate,    v => synth.lfoRate    = v);
+                MakeSliderRow(parent, "Pitch",  40f, 500f, synth.carrierNote, v => synth.carrierNote = v);
+                break;
+            case FMSynthesizer.PhysicalModel.SoftMetal:
+                MakeSliderRow(parent, "Strike", 0f, 5f, synth.lfoRate,    v => synth.lfoRate    = v);
+                MakeSliderRow(parent, "Ring",   0f, 10f, synth.modIndex,  v => synth.modIndex   = v);
+                break;
+            case FMSynthesizer.PhysicalModel.RunningWater:
+                MakeSliderRow(parent, "Flow",   0f, 5f, synth.lfoRate,    v => synth.lfoRate    = v);
+                MakeSliderRow(parent, "Turb",   0f, 10f, synth.modIndex,  v => synth.modIndex   = v);
+                break;
+            case FMSynthesizer.PhysicalModel.Fire:
+                // Flame capped at 2.5 (was 5): high crack rate creates a sweeping
+                // buzz that sounds too similar to the flyby spatial effect.
+                MakeSliderRow(parent, "Flame",  0f, 2.5f, synth.lfoRate,  v => synth.lfoRate    = v);
+                MakeSliderRow(parent, "Heat",   0f, 10f, synth.modIndex,  v => synth.modIndex   = v);
+                break;
+            case FMSynthesizer.PhysicalModel.Stone:
+                MakeSliderRow(parent, "Roll",   0f, 5f, synth.lfoRate,    v => synth.lfoRate    = v);
+                MakeSliderRow(parent, "Mass",   40f, 200f, synth.carrierNote, v => synth.carrierNote = v);
+                break;
+            case FMSynthesizer.PhysicalModel.WoodStickSlip:
+                MakeSliderRow(parent, "Bow",    0f, 5f, synth.lfoRate,    v => synth.lfoRate    = v);
+                MakeSliderRow(parent, "Tension",0f, 10f, synth.modIndex,  v => synth.modIndex   = v);
+                break;
+            case FMSynthesizer.PhysicalModel.IceMetal:
+                MakeSliderRow(parent, "Rate",   0f, 5f, synth.lfoRate,    v => synth.lfoRate    = v);
+                MakeSliderRow(parent, "Crystal",0.5f, 8f, synth.modRatio, v => synth.modRatio   = v);
+                break;
+            case FMSynthesizer.PhysicalModel.DeepPour:
+                MakeSliderRow(parent, "Pour",   0f, 5f, synth.lfoRate,    v => synth.lfoRate    = v);
+                MakeSliderRow(parent, "Depth",  40f, 400f, synth.carrierNote, v => synth.carrierNote = v);
+                break;
+            case FMSynthesizer.PhysicalModel.IceRain:
+                MakeSliderRow(parent, "Rain",   0f, 5f, synth.lfoRate,    v => synth.lfoRate    = v);
+                MakeSliderRow(parent, "Impact", 0f, 10f, synth.modIndex,  v => synth.modIndex   = v);
+                break;
+            default:
+                MakeSliderRow(parent, "Flow",   0f, 5f, synth.lfoRate,    v => synth.lfoRate    = v);
+                MakeSliderRow(parent, "Energy", 0f, 10f, synth.modIndex,  v => synth.modIndex   = v);
+                break;
+        }
     }
 
     void MakeOscRow(Transform parent, FMSynthesizer synth)

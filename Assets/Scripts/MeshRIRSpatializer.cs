@@ -4,76 +4,123 @@ using System.IO;
 using UnityEngine;
 
 /// <summary>
-/// MeshRIR v2 – proper multi-azimuth spatial interpolation.
+/// MeshRIR Spatializer v3 — implements the actual MeshRIR interpolation algorithm.
 ///
-/// Key improvements over v1:
-///  • 12-position azimuth kernel table; runtime linear-interpolation between
-///    the two nearest positions → smooth spatial sound across full 360°
-///  • Per-sample parameter smoothing (same technique as HiFiHarpSpatializer)
-///    eliminates the choppy discontinuities at centre/intermediate angles
-///  • Binaural ITD + ILD + head-shadow model, all interpolated continuously
-///  • Elevation-aware energy tilt
-///  • Built-in soft compressor + hard limiter → no clipping / burst pops
+/// Algorithm (from sh01k/MeshRIR):
+///   Given N source positions p_1…p_N each with a measured room IR h_1…h_N,
+///   and a target source direction d_target:
 ///
-/// Tune parameters (Rate / Depth / Energy / Material / Density) map to
-/// acoustically meaningful room properties and are exposed to SolarSystemUI.
+///     IR_target = Σ wᵢ × hᵢ
+///     wᵢ = (1/dist(d_target, dᵢ)²) / Σⱼ(1/dist(d_target, dⱼ)²)
+///
+///   This inverse-distance-weighted blend gives smooth spatial IR interpolation
+///   across the full 360° without discontinuities.
+///
+/// Data loading (StreamingAssets/MeshRIR/):
+///   pos_src.npy  — source positions  (numSrc × 3)
+///   pos_mic.npy  — mic positions     (numMic × 3)
+///   ir_0.npy     — IRs to mic 0      (numSrc × irLen)
+///   Sampling rate assumed 48 kHz (resampled at load time if device differs)
+///
+/// Tune parameters → Rate / Depth / Energy / Material / Density
+/// Built-in compressor + hard limiter on output.
 /// </summary>
 [DisallowMultipleComponent]
 public class MeshRIRSpatializer : MonoBehaviour, IPlanetSpatializer
 {
-    // ── Tune parameters (exposed to UI) ────────────────────────────────────
-    [Range(0f, 1f)] public float rate     = 0.50f; // tracking speed & room animation
-    [Range(0f, 1f)] public float depth    = 0.55f; // reverb tail length
-    [Range(0f, 1f)] public float energy   = 0.60f; // wet / spatial energy level
-    [Range(0f, 1f)] public float material = 0.35f; // surface absorption (0=reflective, 1=absorptive)
-    [Range(0f, 1f)] public float density  = 0.50f; // reflection density in diffuse tail
+    // ── Tune parameters ────────────────────────────────────────────────────
+    [Range(0f, 1f)] public float rate          = 0.50f; // direction-tracking speed
+    [Range(0f, 1f)] public float depth         = 0.55f; // reverb tail length / kernel depth
+    [Range(0f, 1f)] public float energy        = 0.60f; // wet spatial energy
+    [Range(0f, 1f)] public float material      = 0.35f; // absorption (0=reflective,1=absorptive)
+    [Range(0f, 1f)] public float density       = 0.50f; // tap density in diffuse tail
+    // Flyby parameters — two axes of control, replacing the single opaque flybyIntensity:
+    //   flySense  : how easily the whoosh triggers (low = only very fast/close passes,
+    //               high = even slow orbits produce a noticeable sweep effect)
+    //   flyStrength: how dramatic the effect is once triggered (far-ear occlusion depth,
+    //               amplitude pulse height, near-ear brightness)
+    [Range(0f, 1f)] public float flySense    = 0.65f;
+    [Range(0f, 2f)] public float flyStrength = 1.00f;
 
-    // ── Internal constants ──────────────────────────────────────────────────
-    const int   NumAzimuths  = 12;      // azimuth slices in kernel table (every 30°)
-    const int   MaxTaps      = 56;      // max taps per azimuth entry
-    const int   RingSize     = 8192;    // delay line length (must be power of 2)
-    const float MaxITD_s     = 0.00075f;// max interaural time delay (seconds) ~0.75 ms
-    const float CompThresh   = 0.40f;   // compressor threshold
-    const float CompRatio    = 4.0f;    // compressor ratio above threshold
-    const float LimiterCeil  = 0.90f;   // hard limiter ceiling
+    // ── Constants ──────────────────────────────────────────────────────────
+    const int   RingSize     = 8192;    // power-of-2 delay line
+    const int   MaxTapsPerSrc = 40;     // sparse taps extracted per source IR
+    const int   MaxSources    = 128;
+    const float MaxITD_s     = 0.00075f;
+    const float CompThresh   = 0.42f;
+    const float CompRatio    = 4.0f;
+    const float LimiterCeil  = 0.90f;
+    const int   MeshRIR_SR   = 48000;  // MeshRIR dataset sample rate
 
-    // ── One room reflection tap ─────────────────────────────────────────────
-    struct Tap { public int delay; public float left; public float right; }
+    // ── One sparse tap ─────────────────────────────────────────────────────
+    struct Tap
+    {
+        public int delay;
+        public float left;
+        public float right;
+    }
 
-    // ── Per-azimuth kernel tables (built at Awake) ──────────────────────────
-    Tap[][] aziTable;  // aziTable[azIndex][tapIndex]
+    // ── Per-source entry ───────────────────────────────────────────────────
+    struct SrcEntry
+    {
+        public Vector2 dir;    // normalised 2D direction from listener (azimuth on unit circle)
+        public Tap[]   taps;   // sparse taps extracted from this source's IR
+    }
 
-    // ── Delay ring ──────────────────────────────────────────────────────────
+    SrcEntry[] sources;         // loaded/synthesised source entries
+
+    // ── Delay line ─────────────────────────────────────────────────────────
     readonly float[] ring = new float[RingSize];
     int ringIdx;
 
-    // ── Per-sample smooth tracking state ───────────────────────────────────
-    // (updated in Update(), consumed + smoothed every audio sample)
-    float targetAzi;        // normalised azimuth 0..1  (0 = front, 0.25 = right, …)
-    float targetElev;       // elevation  -1..1
-    float targetDistGain;   // distance attenuation gain
-
-    float cachedAzi      = 0f;
-    float cachedElev     = 0f;
+    // ── Per-sample smooth-tracking state ───────────────────────────────────
+    Vector2 targetDir = Vector2.up;
+    Vector2 cachedDir = Vector2.up;
+    float targetElev;
+    float targetDistGain = 1.2f;
+    float cachedElev;
     float cachedDistGain = 1.2f;
 
-    // ── Compressor state ────────────────────────────────────────────────────
-    float compEnvL = 0f, compEnvR = 0f;
+    // ── Compressor state ───────────────────────────────────────────────────
+    float compEnvL, compEnvR;
 
-    // ── NpyKernelSet: optional per-azimuth binaural taps from .npy data ────
-    struct NpyBinaural { public float[] left; public float[] right; }
+    // ── Pre-allocated weight scratch buffer (avoids GC on audio thread) ────
+    readonly float[] _targetWeights = new float[MaxSources];
+    readonly float[] _smoothWeights = new float[MaxSources];
 
-    // ── References ──────────────────────────────────────────────────────────
+    // ── Smoothed ITD state (avoids binary switch at centre crossing) ────────
+    float _cachedItdL;  // smoothed delayed-sample value for left ear
+    float _cachedItdR;  //                                    right ear
+
+    // ── Near-field flyby / Wwise-style 3D audio state ───────────────────────
+    // Angular velocity is computed from orbital tangential speed / distance.
+    // This spikes to large values as the source approaches dist → 0, which is
+    // exactly the physical condition that produces the "whoosh past the ear".
+    Vector3 _prevWorldPos  = Vector3.zero;   // for velocity estimation (position diff)
+    Vector2 _prevTargetDir = Vector2.up;     // last valid approach direction
+    float   _angVelSmooth  = 0f;    // smoothed ω = tanSpeed / clampedDist (rad/s)
+    float   _distSmooth    = 300f;  // smoothed clamped source distance
+    // HP filter state for near-ear spectral brightening (per audio-thread sample)
+    float   _hpPrevInL    = 0f;
+    float   _hpPrevOutL   = 0f;
+    float   _hpPrevInR    = 0f;
+    float   _hpPrevOutR   = 0f;
+
+    // ── Misc ───────────────────────────────────────────────────────────────
     Transform listener;
+    bool ready; // true after Start() finishes kernel build
 
     // ═══════════════════════════════════════════════════════════════════════
-    //  Unity lifecycle
-    // ═══════════════════════════════════════════════════════════════════════
-
     void Awake()
     {
         listener = FindAnyObjectByType<AudioListener>()?.transform;
-        BuildKernelTable();
+        // Kernel build deferred to Start() — AudioSettings requires main thread
+    }
+
+    void Start()
+    {
+        BuildSourceTable();
+        ready = true;
     }
 
     void Update()
@@ -84,99 +131,197 @@ public class MeshRIRSpatializer : MonoBehaviour, IPlanetSpatializer
     // ═══════════════════════════════════════════════════════════════════════
     //  IPlanetSpatializer
     // ═══════════════════════════════════════════════════════════════════════
-
     public void ProcessSample(float mono, out float left, out float right)
     {
-        // Write input into the ring
+        if (!ready || sources == null || sources.Length == 0)
+        {
+            left = mono; right = mono; return;
+        }
+
         ring[ringIdx] = mono;
 
-        // ── Per-sample smooth parameter tracking ───────────────────────────
-        // rate [0..1] blends tracking speed 0.0018..0.0055 per sample
-        // Higher rate = faster spatial updates = more responsive but slightly
-        // harsher on fast movement. Lower rate = smoother panning.
-        float k = 0.0018f + rate * 0.0037f;
-        cachedAzi      += (targetAzi      - cachedAzi)      * k;
+        // ── Per-sample smooth tracking ─────────────────────────────────────
+        float k = 0.0024f + rate * 0.0100f;
+        cachedDir += (targetDir - cachedDir) * k;
+        if (cachedDir.sqrMagnitude < 0.0001f)
+            cachedDir = Vector2.up;
+        else
+            cachedDir.Normalize();
         cachedElev     += (targetElev     - cachedElev)     * k;
         cachedDistGain += (targetDistGain - cachedDistGain) * 0.0010f;
 
-        // ── Azimuth interpolation: find two neighbouring table entries ─────
-        float aziFrac = cachedAzi * NumAzimuths;      // 0 .. NumAzimuths
-        int   aziLo   = (int)aziFrac % NumAzimuths;
-        int   aziHi   = (aziLo + 1) % NumAzimuths;
-        float aziT    = aziFrac - (int)aziFrac;       // fractional blend weight
+        float dx = cachedDir.x;   // +1 = right
+        float dz = cachedDir.y;   // +1 = front
 
-        // ── Binaural direct path (ITD + ILD + head shadow) ─────────────────
-        float aziAngle = cachedAzi * 2f * Mathf.PI;
-        float sinAzi   = Mathf.Sin(aziAngle);         // lateral component
-        float cosAzi   = Mathf.Cos(aziAngle);         // front/back component
+        // ── IDW weights — smoothed per-sample to avoid sudden tap swaps ─────
+        float wTotal = 0f;
+        int   nSrc   = Mathf.Min(sources.Length, _targetWeights.Length);
 
-        // ITD: interaural time delay — interpolated smoothly via cachedAzi
-        int itdSamples = Mathf.RoundToInt(
-            Mathf.Abs(sinAzi) * MaxITD_s * AudioSettings.outputSampleRate);
-
-        // Ipsilateral ear gets the "early" sample, contralateral gets ITD delay
-        float directL = sinAzi >= 0f ? mono : ReadRing(itdSamples);
-        float directR = sinAzi <= 0f ? mono : ReadRing(itdSamples);
-
-        // ILD: constant-power pan + head-shadow attenuation on far ear
-        float halfPi   = Mathf.PI * 0.5f;
-        float panAngle = Mathf.Clamp((sinAzi + 1f) * 0.5f, 0f, 1f) * halfPi;
-        float dlGain   = Mathf.Cos(panAngle);   // left channel gain
-        float drGain   = Mathf.Sin(panAngle);   // right channel gain
-
-        // Head-shadow: far side loses high-frequency energy (simulated as gain dip)
-        float shadow   = Mathf.Clamp01(Mathf.Abs(sinAzi));
-        float frontBoost = 1f + cosAzi * 0.12f;           // front sounds brighter
-        if (sinAzi > 0f)  dlGain *= Mathf.Lerp(1f, 0.52f, shadow);   // L is far
-        else              drGain *= Mathf.Lerp(1f, 0.52f, shadow);    // R is far
-
-        // Elevation: mild gain tilt based on cached elevation
-        float elevScale = 1f + cachedElev * 0.10f;
-
-        float directGain = (1f - energy * 0.28f) * cachedDistGain * frontBoost;
-        float l = directL * directGain * dlGain * elevScale;
-        float r = directR * directGain * drGain * elevScale;
-
-        // ── Wet: interpolate between aziLo and aziHi tap arrays ───────────
-        // Linear blend of gain values at each tap — this is the core fix for
-        // the choppy middle: gains transition continuously, not in discrete steps
-        Tap[] tapsLo = aziTable[aziLo];
-        Tap[] tapsHi = aziTable[aziHi];
-        int   nTaps  = Mathf.Min(tapsLo.Length, tapsHi.Length);
-
-        float wetGain = energy * (0.55f + depth * 0.55f) * cachedDistGain;
-
-        for (int i = 0; i < nTaps; i++)
+        for (int i = 0; i < nSrc; i++)
         {
-            // Blend delay time (small ITD shift in early reflections)
-            int tapDelay = Mathf.RoundToInt(
-                tapsLo[i].delay + (tapsHi[i].delay - tapsLo[i].delay) * aziT);
-            tapDelay = Mathf.Max(1, tapDelay);
-
-            // Blend L/R tap gains
-            float tapL = tapsLo[i].left  + (tapsHi[i].left  - tapsLo[i].left)  * aziT;
-            float tapR = tapsLo[i].right + (tapsHi[i].right - tapsLo[i].right) * aziT;
-
-            float s = ReadRing(tapDelay);
-            l += s * tapL * wetGain * elevScale;
-            r += s * tapR * wetGain * elevScale;
+            float dot   = Mathf.Clamp(Vector2.Dot(cachedDir, sources[i].dir), -1f, 1f);
+            float chord = Mathf.Max(0.0001f, 1f - dot);
+            _targetWeights[i] = 1f / (chord * chord + 0.018f);
+            wTotal += _targetWeights[i];
         }
 
-        // Advance ring pointer
+        float invW    = wTotal > 0.00001f ? 1f / wTotal : 0f;
+        float weightK = 0.0045f + rate * 0.018f;
+        float smoothTotal = 0f;
+        for (int i = 0; i < nSrc; i++)
+        {
+            _smoothWeights[i] += (_targetWeights[i] * invW - _smoothWeights[i]) * weightK;
+            smoothTotal += _smoothWeights[i];
+        }
+        float invSmoothW = smoothTotal > 0.00001f ? 1f / smoothTotal : 0f;
+
+        // ── Binaural direct path — smooth ITD crossfade, no binary switch ───
+        // Instead of "if dx>0, delay left ear else delay right", we smoothly
+        // blend: at dx=+1 left ear gets full delay, right ear gets direct.
+        // At dx=0 both get the same signal. No discrete jump at centre crossing.
+        int itdSamples = Mathf.RoundToInt(Mathf.Abs(dx) * MaxITD_s * AudioSettings.outputSampleRate);
+        float monoDelayed = ReadRing(itdSamples);
+        float lateralT  = (dx + 1f) * 0.5f;              // 0=full-left, 1=full-right
+        float rawL = Mathf.Lerp(mono,       monoDelayed, lateralT);   // left ear delayed when source right
+        float rawR = Mathf.Lerp(monoDelayed, mono,       lateralT);   // right ear delayed when source left
+
+        // Smooth the per-channel direct signal an extra notch to kill any
+        // residual glitch at the ITD rounding boundary (~0.02 ms at most)
+        _cachedItdL += (rawL - _cachedItdL) * 0.55f;
+        _cachedItdR += (rawR - _cachedItdR) * 0.55f;
+
+        float halfPi   = Mathf.PI * 0.5f;
+        float panAngle = Mathf.Clamp((dx + 1f) * 0.5f, 0f, 1f) * halfPi;
+        float dlGain   = Mathf.Cos(panAngle);
+        float drGain   = Mathf.Sin(panAngle);
+        float absDx    = Mathf.Abs(dx);
+        float shadow   = Mathf.Clamp01(absDx);
+        // Front-back boost: 28% louder in front, 28% softer behind.
+        // Critical for front/back azimuth perception on headphones.
+        float frontBoost = 1f + dz * 0.28f;
+
+        // ── Near-field flyby binaural physics ────────────────────────────────
+        // avN: angular velocity normalised to [0,1].
+        // flySense [0,1] maps to divisor [20,1]:
+        //   flySense=0.0 → divisor=20 → only very fast/close passes trigger (subtle)
+        //   flySense=0.65→ divisor≈7  → default: moderate orbits give avN≈0.3-0.5
+        //   flySense=1.0 → divisor=1  → almost any movement produces an effect
+        float avNDivisor = Mathf.Lerp(20f, 1f, flySense);
+        float avN        = Mathf.Clamp01(_angVelSmooth / avNDivisor);
+
+        // nearT: proximity boost for near-field ILD only.
+        float nearT  = Mathf.Clamp01(1f - _distSmooth / 80f);
+
+        // flybyT: raw factor — fast AND lateral.
+        // effectiveT: scaled by flyStrength (how dramatic once triggered).
+        float flybyT     = avN * shadow;
+        float effectiveT = Mathf.Clamp01(flybyT * flyStrength);
+
+        // Dynamic head shadow: deepens 0.36 → 0.02 at full effectiveT.
+        // Stronger rest value (0.36 vs 0.52) gives more ILD even at slow orbits.
+        // Far ear nearly silent during a fast lateral sweep = the Wwise sensation.
+        float dynShadow = Mathf.Lerp(0.36f, 0.02f, effectiveT);
+
+        // Near-field ILD: near ear boosted when source is physically close AND lateral.
+        float nfBoost = 1f + nearT * absDx * 1.35f;
+
+        if (dx > 0f)
+        {
+            dlGain *= Mathf.Lerp(1f, dynShadow, shadow);  // left = far ear → shadowed
+            drGain *= nfBoost;                             // right = near ear → boosted
+        }
+        else
+        {
+            drGain *= Mathf.Lerp(1f, dynShadow, shadow);  // right = far ear → shadowed
+            dlGain *= nfBoost;                             // left = near ear → boosted
+        }
+
+        // Flyby presence pulse (uses effectiveT — respects per-planet intensity).
+        float flybyPulse = 1f + effectiveT * 0.80f;
+        // Elevation gain: 22% louder overhead, 22% softer below — was 8% (inaudible).
+        float elevGain   = 1f + cachedElev * 0.22f;
+
+        // Direct gain decreases as Reverb (energy) rises — wider contrast so
+        // wet/dry crossfade is clearly audible across the slider's full range.
+        float directGain = Mathf.Lerp(1.15f, 0.58f, energy) * cachedDistGain * frontBoost * elevGain * flybyPulse;
+        float l = _cachedItdL * directGain * dlGain;
+        float r = _cachedItdR * directGain * drGain;
+
+        // ── Wet: MeshRIR-interpolated room reflections ──────────────────────
+        // Process ALL sources whose smoothed weight clears the threshold.
+        // This replaces the old top-K selection which caused audible pops
+        // whenever the set of "active" sources changed from one sample to the next.
+        // Reverb (energy): 0 = fully dry, 1 = fully wet. Boosted range so the
+        // slider has clearly audible effect across its travel.
+        float wetGain  = energy * Mathf.Lerp(0.65f, 2.10f, depth) * cachedDistGain;
+
+        float tapKeep  = Mathf.Lerp(0.28f, 1f, density);
+
+        // Damp (material): 0 = hard/reflective (long tail), 1 = absorptive (short tail).
+        // Fixed direction: was Lerp(1.85,0.62,material) which was backwards — higher
+        // material gave LESS tailDecay (longer reverb), opposite of "more damping".
+        float tailDecay = Mathf.Lerp(8.5f, 1.8f, depth) * Mathf.Lerp(0.55f, 2.20f, material);
+        float srInv    = 1f / Mathf.Max(1, AudioSettings.outputSampleRate);
+        const float MinWetWeight = 0.022f; // sources below this contribute negligibly
+
+        for (int i = 0; i < nSrc; i++)
+        {
+            float w = _smoothWeights[i] * invSmoothW;
+            if (w < MinWetWeight) continue;
+
+            Tap[] taps = sources[i].taps;
+            if (taps == null || taps.Length == 0) continue;
+
+            int activeTaps = Mathf.Clamp(Mathf.CeilToInt(taps.Length * tapKeep), 1, taps.Length);
+            float ws = w * wetGain;
+
+            for (int t = 0; t < activeTaps; t++)
+            {
+                float s    = ReadRing(taps[t].delay) * ws;
+                float damp = Mathf.Exp(-taps[t].delay * srInv * tailDecay);
+                l += s * taps[t].left  * damp;
+                r += s * taps[t].right * damp;
+            }
+        }
+
+        // ── Near-ear spectral brightening (pinna / ear-canal proximity effect) ─
+        // One-pole HP filter, α ≈ 0.82 → Fc ≈ 1.5 kHz at 48 kHz.
+        // During a fast flyby the near ear picks up a crisp high-frequency edge —
+        // the characteristic "whoosh" timbre absent in far-field spatializers.
+        const float hpA = 0.82f;
+        float hpL = hpA * (_hpPrevOutL + l - _hpPrevInL);
+        _hpPrevInL = l;  _hpPrevOutL = hpL;
+        float hpR = hpA * (_hpPrevOutR + r - _hpPrevInR);
+        _hpPrevInR = r;  _hpPrevOutR = hpR;
+
+        // Near-ear spectral brightening — uses effectiveT so flyStrength scales it too.
+        // At effectiveT=1: +60 % HP blend → crisp "whoosh" edge on the near ear.
+        float brightAmt = effectiveT * 0.60f;
+        if (dx > 0f) r += hpR * brightAmt;   // source right → right = near ear
+        else         l += hpL * brightAmt;   // source left  → left  = near ear
+
+        // ── Elevation spectral tilt (pinna cue) ─────────────────────────────
+        // Above the listener: pinna reflects high frequencies into the ear canal
+        //   → add HP content (brighter).
+        // Below the listener: ear canal shadowed → subtract HP (darker, LP-like).
+        //   signal - HP ≈ LP, so this naturally darkens the high shelf.
+        float elevAbove = Mathf.Clamp01( cachedElev);   // 0..1 overhead
+        float elevBelow = Mathf.Clamp01(-cachedElev);   // 0..1 below
+        l += hpL * elevAbove * 0.55f;
+        r += hpR * elevAbove * 0.55f;
+        l -= hpL * elevBelow * 0.28f;
+        r -= hpR * elevBelow * 0.28f;
+
         ringIdx = (ringIdx + 1) & (RingSize - 1);
 
-        // ── Compressor + limiter ───────────────────────────────────────────
-        l = ApplyDynamics(l, ref compEnvL);
-        r = ApplyDynamics(r, ref compEnvR);
-
-        left  = l;
-        right = r;
+        // ── Compressor + limiter ────────────────────────────────────────────
+        left  = ApplyDynamics(l, ref compEnvL);
+        right = ApplyDynamics(r, ref compEnvR);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    //  Direction tracking (called from Update on main thread)
+    //  Direction tracking
     // ═══════════════════════════════════════════════════════════════════════
-
     void UpdateDirection()
     {
         if (listener == null)
@@ -184,62 +329,85 @@ public class MeshRIRSpatializer : MonoBehaviour, IPlanetSpatializer
         if (listener == null) return;
 
         Vector3 world = transform.position - listener.position;
-        float dist = world.magnitude;
-        if (dist < 0.001f)
+        float   dist  = world.magnitude;
+
+        // ── Minimum clamp distance (≈ head radius) ─────────────────────────
+        // Fig8 / Rose orbits pass through the listener's position — we never
+        // let dist reach zero.  At MinDist the source is treated as being right
+        // at the ear, which produces maximum ILD and the loudest flyby pulse.
+        const float MinDist = 2f;
+        float clampedDist = Mathf.Max(MinDist, dist);
+
+        // ── Direction: freeze inside the "head zone" ────────────────────────
+        // When the planet is closer than MinDist*0.5f we keep the last valid
+        // approach direction rather than resetting to Vector2.up.  The moment
+        // it re-emerges on the other side the direction flips, driving a massive
+        // angular-velocity spike exactly as desired.
+        if (dist >= MinDist * 0.5f)
         {
-            targetAzi = 0f; targetElev = 0f;
-            return;
+            Vector3 local = listener.InverseTransformDirection(world / clampedDist);
+            var dir = new Vector2(local.x, local.z);
+            if (dir.sqrMagnitude > 0.0001f)
+            {
+                targetDir  = dir.normalized;
+                targetElev = Mathf.Clamp(local.y, -1f, 1f);
+            }
         }
+        // else: keep last targetDir & targetElev — source is "inside the head"
 
-        Vector3 local = listener.InverseTransformDirection(world / dist);
+        // ── Distance gain: inverse-distance loudness boost at close range ───
+        // As dist → MinDist the gain rises to 2.8× so a flyby is viscerally
+        // louder, consistent with real acoustic inverse-square law.
+        float dist01   = Mathf.Clamp01((clampedDist - MinDist) / (680f - MinDist));
+        targetDistGain = Mathf.Lerp(2.8f, 1.05f, dist01);
 
-        // Azimuth: atan2(x, z) → 0..1 normalised (0=front CCW)
-        float azi = Mathf.Atan2(local.x, local.z) / (2f * Mathf.PI);
-        if (azi < 0f) azi += 1f;
-        targetAzi  = azi;
-        targetElev = Mathf.Clamp(local.y, -1f, 1f);
+        // ── Angular velocity: ω = tangential speed / distance ───────────────
+        // This is the physically correct formulation.  Unlike the cross-product
+        // approach (which gives 0 for a 180° flip), this spikes correctly as
+        // clampedDist shrinks — exactly when a fig8 / fast planet flies past.
+        Vector3 vel      = (transform.position - _prevWorldPos)
+                           / Mathf.Max(Time.deltaTime, 0.001f);
+        _prevWorldPos    = transform.position;
+        Vector3 los      = dist > 0.001f ? world / dist : new Vector3(_prevTargetDir.x, 0f, _prevTargetDir.y);
+        float   tanSpeed = (vel - Vector3.Dot(vel, los) * los).magnitude;
+        float   angVel   = tanSpeed / clampedDist;
 
-        // Distance gain: mild roll-off over long planetary distances
-        float dist01      = Mathf.Clamp01((dist - 30f) / 650f);
-        targetDistGain    = Mathf.Lerp(1.45f, 1.05f, dist01);
+        // ── Peak-hold envelope: fast attack / slow decay ──────────────────────
+        // Symmetric smoothing (0.18) caused ~90 ms lag: the whoosh peaked well
+        // after the closest-approach moment.  With fast attack (0.72) the value
+        // rises within ~1 frame, so the effect lands right when the eye sees it.
+        // Slow decay (0.04) lets the sensation linger naturally after the pass.
+        float attackK = angVel > _angVelSmooth ? 0.72f : 0.04f;
+        _angVelSmooth  += (angVel      - _angVelSmooth) * attackK;
+        _distSmooth    += (clampedDist - _distSmooth)   * 0.04f;
+        _prevTargetDir  = targetDir;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    //  Dynamics processing: compressor + hard limiter
+    //  Dynamics
     // ═══════════════════════════════════════════════════════════════════════
-
-    float ApplyDynamics(float x, ref float envState)
+    float ApplyDynamics(float x, ref float env)
     {
         float absX = Mathf.Abs(x);
+        float spd  = absX > env ? 0.28f : 0.0007f;
+        env += (absX - env) * spd;
 
-        // Peak envelope follower (attack fast, release slow)
-        float envSpeed = absX > envState ? 0.30f : 0.0008f;
-        envState += (absX - envState) * envSpeed;
-
-        // Compressor: gain reduction when envelope exceeds threshold
-        float gainReduction = 1f;
-        if (envState > CompThresh)
+        float gain = 1f;
+        if (env > CompThresh)
         {
-            float over = envState - CompThresh;
-            float compressed = CompThresh + over / CompRatio;
-            gainReduction = compressed / Mathf.Max(envState, 0.00001f);
+            float over = env - CompThresh;
+            gain = (CompThresh + over / CompRatio) / Mathf.Max(env, 0.00001f);
         }
-        x *= gainReduction;
+        x *= gain;
 
-        // Hard limiter with soft knee (avoids harsh clicks at ceiling)
-        if      (x >  LimiterCeil) x =  LimiterCeil + (x - LimiterCeil)  * 0.08f;
-        else if (x < -LimiterCeil) x = -LimiterCeil + (x + LimiterCeil)  * 0.08f;
-
-        return x;
+        return (float)Math.Tanh(x / LimiterCeil) * LimiterCeil;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    //  Ring buffer read
+    //  Ring buffer
     // ═══════════════════════════════════════════════════════════════════════
-
     float ReadRing(int delay)
     {
-        // Clamp delay to ring capacity
         if (delay >= RingSize) delay = RingSize - 1;
         int idx = ringIdx - delay;
         if (idx < 0) idx += RingSize;
@@ -247,230 +415,203 @@ public class MeshRIRSpatializer : MonoBehaviour, IPlanetSpatializer
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    //  Kernel table construction
+    //  Source table construction
     // ═══════════════════════════════════════════════════════════════════════
-
-    void BuildKernelTable()
+    void BuildSourceTable()
     {
         int sr = Mathf.Max(1, AudioSettings.outputSampleRate);
 
-        // Try to load MeshRIR .npy dataset first (provides best quality)
-        if (TryLoadNpyKernels(sr))
+        // ── Try loading actual MeshRIR dataset ──────────────────────────────
+        if (TryLoadMeshRIRDataset(sr))
         {
-            Debug.Log("[MeshRIR] Loaded kernel table from .npy dataset.");
+            Debug.Log($"[MeshRIR] Loaded {sources.Length} sources from dataset (sr={sr})");
             return;
         }
 
-        // Try mono WAV fallback
-        if (TryLoadWavKernel(sr))
-        {
-            Debug.Log("[MeshRIR] Loaded kernel from WAV. Using binaural synthesis model.");
-            return;
-        }
-
-        // Fully synthetic fallback – still produces high-quality spatial audio
-        BuildSyntheticKernels(sr);
-        Debug.Log("[MeshRIR] Using built-in synthetic kernel table. " +
-                  "Place ir_*.npy files under StreamingAssets/MeshRIR for dataset quality.");
+        // ── Synthetic fallback: 32 sources on a circle ──────────────────────
+        BuildSyntheticSources(sr, 32);
+        Debug.Log($"[MeshRIR] Using synthetic source table ({sources.Length} positions). " +
+                   "Place MeshRIR .npy files under StreamingAssets/MeshRIR/ for real data.");
     }
 
-    // ── .npy path ──────────────────────────────────────────────────────────
-    bool TryLoadNpyKernels(int sr)
+    // ── Real dataset loading ────────────────────────────────────────────────
+    bool TryLoadMeshRIRDataset(int sr)
     {
         string root = Path.Combine(Application.streamingAssetsPath, "MeshRIR");
         if (!Directory.Exists(root)) return false;
 
-        var files = new List<string>(Directory.GetFiles(root, "ir_*.npy", SearchOption.AllDirectories));
-        if (files.Count == 0) return false;
-        files.Sort(StringComparer.OrdinalIgnoreCase);
+        // Require pos_src.npy and at least one ir_N.npy
+        string posSrcPath = Path.Combine(root, "pos_src.npy");
+        if (!File.Exists(posSrcPath)) return false;
 
-        // Build an azimuth table from however many .npy files exist.
-        // Each .npy is assumed to be a (N_pos × T) array of impulse responses.
-        // We synthesise L/R from the mono IR using our binaural model.
-        if (!SpatialAudioNpy.TryRead(files[0], out var array)) return false;
+        // Find mic IR files: ir_0.npy, ir_1.npy …
+        var irFiles = new List<string>(Directory.GetFiles(root, "ir_*.npy", SearchOption.TopDirectoryOnly));
+        irFiles.Sort(StringComparer.OrdinalIgnoreCase);
+        if (irFiles.Count == 0) return false;
 
-        int irLen  = array.shape[array.shape.Length - 1];
-        int nRows  = array.values.Length / Mathf.Max(1, irLen);
-        int tapLen = Mathf.Min(MaxTaps * 4, Mathf.Min(2048, irLen));
+        if (!SpatialAudioNpy.TryRead(posSrcPath, out var srcPosArray)) return false;
 
-        aziTable = new Tap[NumAzimuths][];
-        for (int az = 0; az < NumAzimuths; az++)
+        // pos_src shape: (numSrc, 3) → flatten: [x0,y0,z0, x1,y1,z1, …]
+        int numSrc = srcPosArray.values.Length / 3;
+        if (numSrc < 2) return false;
+
+        // Use a stereo mic pair when available. A mono file still works, but
+        // true left/right IRs are what make the MeshRIR branch worth having.
+        if (!SpatialAudioNpy.TryRead(irFiles[0], out var leftIrArray)) return false;
+        var rightIrArray = leftIrArray;
+        if (irFiles.Count > 1)
         {
-            float aziAngle = az / (float)NumAzimuths * 2f * Mathf.PI;
-            float sinAz    = Mathf.Sin(aziAngle);
-            int   row      = (int)(((aziAngle / (2f * Mathf.PI)) * nRows) % nRows);
-            int   offset   = row * irLen;
+            if (SpatialAudioNpy.TryRead(irFiles[1], out var candidateRight))
+                rightIrArray = candidateRight;
+        }
 
-            var taps = new List<Tap>(MaxTaps);
-            float peak = 0f;
-            for (int i = 0; i < tapLen; i++)
-            {
-                float v = array.values[offset + i];
-                if (Mathf.Abs(v) > peak) peak = Mathf.Abs(v);
-            }
-            float normGain = peak > 0.00001f ? 0.30f / peak : 1f;
+        // ir_N.npy shape: (numSrc, irLen)
+        int irLen   = leftIrArray.shape[leftIrArray.shape.Length - 1];
+        int srcCheck = leftIrArray.values.Length / Mathf.Max(1, irLen);
+        int rightSrcCheck = rightIrArray.values.Length / Mathf.Max(1, irLen);
+        if (rightSrcCheck < srcCheck) srcCheck = rightSrcCheck;
+        if (srcCheck < numSrc) numSrc = srcCheck;
 
-            // Sample every few frames as sparse taps, applying binaural model
-            int stride = Mathf.Max(1, tapLen / MaxTaps);
-            for (int i = 0; i < tapLen && taps.Count < MaxTaps; i += stride)
+        // Find listener reference position (centroid of mic grid, or first mic)
+        Vector3 listenerPos = Vector3.zero;
+        string posMicPath = Path.Combine(root, "pos_mic.npy");
+        if (File.Exists(posMicPath) && SpatialAudioNpy.TryRead(posMicPath, out var micPosArray))
+        {
+            int numMic = micPosArray.values.Length / 3;
+            for (int i = 0; i < numMic; i++)
             {
-                float v = array.values[offset + i] * normGain;
-                if (Mathf.Abs(v) < 0.001f) continue;
-                float ild = Mathf.Abs(sinAz) * 0.42f;
-                float tapL = sinAz >= 0f ? v : v * (1f - ild);
-                float tapR = sinAz <= 0f ? v : v * (1f - ild);
-                taps.Add(new Tap { delay = Mathf.Max(1, i), left = tapL, right = tapR });
+                listenerPos.x += micPosArray.values[i * 3 + 0];
+                listenerPos.y += micPosArray.values[i * 3 + 1];
+                listenerPos.z += micPosArray.values[i * 3 + 2];
             }
-            aziTable[az] = taps.ToArray();
+            if (numMic > 0) listenerPos /= numMic;
+        }
+
+        // Build SrcEntry for each source position
+        float resampleRatio = MeshRIR_SR / (float)Mathf.Max(1, sr);
+        int   tapLen = Mathf.Min(RingSize - 1, Mathf.CeilToInt(irLen / resampleRatio));
+
+        sources = new SrcEntry[numSrc];
+        for (int s = 0; s < numSrc; s++)
+        {
+            // Source position relative to listener
+            float px = srcPosArray.values[s * 3 + 0] - listenerPos.x;
+            float pz = srcPosArray.values[s * 3 + 2] - listenerPos.z;
+            float mag = Mathf.Sqrt(px * px + pz * pz);
+            Vector2 dir = mag > 0.001f ? new Vector2(px / mag, pz / mag) : Vector2.up;
+
+            // Extract and resample this source's IR
+            int offset = s * irLen;
+            var taps   = ExtractSparseTaps(leftIrArray.values, rightIrArray.values, offset, irLen, tapLen, resampleRatio);
+
+            sources[s] = new SrcEntry { dir = dir, taps = taps };
         }
         return true;
     }
 
-    // ── WAV path ────────────────────────────────────────────────────────────
-    bool TryLoadWavKernel(int sr)
+    // ── Resample + extract sparse taps from a float[] slice ────────────────
+    Tap[] ExtractSparseTaps(float[] leftData, float[] rightData, int offset, int srcLen, int dstLen, float ratio)
     {
-        string root = Path.Combine(Application.streamingAssetsPath, "MeshRIR");
-        string wav  = SpatialAudioWav.FindFirstWav(root);
-        if (string.IsNullOrEmpty(wav)) return false;
-        if (!SpatialAudioWav.TryRead(wav, out var audio)) return false;
-
-        // Down-mix to mono, resample, then apply binaural model per azimuth
-        int   outputRate = Mathf.Max(1, AudioSettings.outputSampleRate);
-        int   frames     = audio.samples.Length / audio.channels;
-        int   tapLen     = Mathf.Min(2048, Mathf.CeilToInt(frames * outputRate / (float)audio.sampleRate));
-        float step       = audio.sampleRate / (float)outputRate;
-        var   monoKernel = new float[tapLen];
-        for (int i = 0; i < tapLen; i++)
+        // Resample: srcLen @ MeshRIR_SR → dstLen @ device SR
+        var left = new float[dstLen];
+        var right = new float[dstLen];
+        for (int i = 0; i < dstLen; i++)
         {
-            float src = i * step;
-            int   i0  = Mathf.Clamp((int)src, 0, frames - 1);
-            int   i1  = Mathf.Min(i0 + 1, frames - 1);
-            float t   = src - i0;
-            float a   = 0f, b = 0f;
-            for (int c = 0; c < audio.channels; c++)
-            {
-                a += audio.samples[i0 * audio.channels + c];
-                b += audio.samples[i1 * audio.channels + c];
-            }
-            monoKernel[i] = Mathf.Lerp(a, b, t) / audio.channels;
+            float srcF = i * ratio;
+            int   i0   = Mathf.Clamp((int)srcF, 0, srcLen - 1);
+            int   i1   = Mathf.Min(i0 + 1, srcLen - 1);
+            float t = srcF - i0;
+            left[i] = Mathf.Lerp(leftData[offset + i0], leftData[offset + i1], t);
+            right[i] = Mathf.Lerp(rightData[offset + i0], rightData[offset + i1], t);
         }
-        NormalizeArray(monoKernel, 0.32f);
-        BuildBinauralTableFromMono(monoKernel, sr);
-        return true;
+
+        // Normalise
+        float peak = 0f;
+        for (int i = 0; i < dstLen; i++)
+        {
+            peak = Mathf.Max(peak, Mathf.Abs(left[i]));
+            peak = Mathf.Max(peak, Mathf.Abs(right[i]));
+        }
+        float normG = peak > 0.00001f ? 0.28f / peak : 1f;
+        for (int i = 0; i < dstLen; i++)
+        {
+            left[i] *= normG;
+            right[i] *= normG;
+        }
+
+        // Build sparse tap list. Runtime density decides how many are used, so
+        // extraction keeps the full budget for continuous slider behaviour.
+        int nTaps  = MaxTapsPerSrc;
+        int stride = Mathf.Max(1, dstLen / nTaps);
+
+        var result = new List<Tap>(nTaps);
+        for (int i = stride / 2; i < dstLen && result.Count < nTaps; i += stride)
+        {
+            float l = left[i];
+            float r = right[i];
+            if (Mathf.Abs(l) + Mathf.Abs(r) < 0.0008f) continue;
+            result.Add(new Tap { delay = Mathf.Max(1, i), left = l, right = r });
+        }
+        return result.ToArray();
     }
 
-    // ── Fully synthetic kernel table ────────────────────────────────────────
-    void BuildSyntheticKernels(int sr)
+    // ── Synthetic sources ───────────────────────────────────────────────────
+    void BuildSyntheticSources(int sr, int numSrc)
     {
-        // Tail length in samples depends on depth [0..1]
-        float tailMs  = 55f + depth * 110f;
-        int   maxTail = Mathf.Min(RingSize - 1,
-                            Mathf.RoundToInt(sr * tailMs / 1000f));
-        int   nTaps   = Mathf.Max(6, Mathf.RoundToInt(MaxTaps * (0.35f + density * 0.65f)));
+        float tailMs  = 190f;
+        int   maxTail = Mathf.Min(RingSize - 1, Mathf.RoundToInt(sr * tailMs / 1000f));
+        int   nTaps   = MaxTapsPerSrc;
 
-        // Absorption coefficient: high material → absorptive → fast decay
-        float absorb = 0.06f + material * 0.80f;
-
-        aziTable = new Tap[NumAzimuths][];
-
-        for (int az = 0; az < NumAzimuths; az++)
+        sources = new SrcEntry[numSrc];
+        for (int s = 0; s < numSrc; s++)
         {
-            float aziAngle = az / (float)NumAzimuths * 2f * Mathf.PI;
-            float sinAz    = Mathf.Sin(aziAngle);  // +1=right, -1=left
-            float cosAz    = Mathf.Cos(aziAngle);  // +1=front, -1=back
-            float frontScale = 1f + cosAz * 0.18f; // front reflections are brighter
+            float aziRad = s / (float)numSrc * 2f * Mathf.PI;
+            float sx     = Mathf.Sin(aziRad);
+            float sz     = Mathf.Cos(aziRad);
+            var   dir    = new Vector2(sx, sz);
 
             var taps = new List<Tap>(nTaps);
 
-            // ── Early reflections (room boundaries) ─────────────────────
-            // Arrival times vary with azimuth (lateral surfaces closer on near side)
-            float[] earlyMs = { 4f, 8f, 13f, 20f, 30f, 44f };
+            // Early reflections — arrival time shifts with lateral position
+            float[] earlyMs = { 4f, 8f, 14f, 22f, 34f, 50f };
             for (int e = 0; e < earlyMs.Length && taps.Count < nTaps / 2; e++)
             {
-                // Lateral shift: near-side wall → earlier arrival on ipsilateral ear
-                float lateralShift = 1f + sinAz * 0.10f;
+                float lateralShift = 1f + sx * 0.12f;
                 int   delay = Mathf.RoundToInt(sr * earlyMs[e] * 0.001f * lateralShift);
                 if (delay < 1 || delay >= maxTail) continue;
-
                 float tSec  = delay / (float)sr;
-                float decay = Mathf.Exp(-tSec * absorb * 22f);
-
-                // ILD: ipsilateral ear gets more direct energy from lateral reflections
-                float ild     = Mathf.Abs(sinAz) * 0.38f;
-                float ipsi    = decay * (0.48f + ild) * frontScale;
-                float contra  = decay * (0.48f - ild * 0.65f) * frontScale;
-                float tapL    = sinAz >= 0f ? ipsi : contra;
-                float tapR    = sinAz <= 0f ? ipsi : contra;
-
-                taps.Add(new Tap { delay = delay,
-                                   left  = tapL * 0.13f,
-                                   right = tapR * 0.13f });
+                float decay = Mathf.Exp(-tSec * 5.2f);
+                float frontBoost = 1f + sz * 0.16f;
+                AddDirectionalTap(taps, delay, decay * frontBoost * 0.13f, sx);
             }
 
-            // ── Diffuse reverb tail ─────────────────────────────────────
-            int   tailStart   = Mathf.RoundToInt(sr * 0.050f);
-            int   tailSpan    = maxTail - tailStart;
-            int   tailTaps    = Mathf.Max(1, nTaps - taps.Count);
-            float tailStep    = tailSpan / (float)Mathf.Max(1, tailTaps - 1);
-
-            for (int t = 0; t < tailTaps; t++)
+            // Diffuse tail
+            int   tailStart = Mathf.RoundToInt(sr * 0.055f);
+            int   tailSpan  = maxTail - tailStart;
+            int   nDiffuse  = Mathf.Max(1, nTaps - taps.Count);
+            float step      = tailSpan / (float)Mathf.Max(1, nDiffuse - 1);
+            for (int t = 0; t < nDiffuse; t++)
             {
-                int   delay = tailStart + Mathf.RoundToInt(t * tailStep);
+                int   delay = tailStart + Mathf.RoundToInt(t * step);
                 if (delay >= maxTail) break;
-
                 float tSec  = delay / (float)sr;
-                float decay = Mathf.Exp(-tSec * absorb * 10f);
-
-                // Diffuse tail: mostly omni, with a gentle lateral spread
-                // that depends on azimuth and density param
-                float spread  = (0.30f + density * 0.38f) * sinAz;
-                float omni    = decay * 0.055f;
-                float tapL    = omni - spread * decay * 0.028f;
-                float tapR    = omni + spread * decay * 0.028f;
-
-                taps.Add(new Tap { delay = delay, left = tapL, right = tapR });
+                float decay = Mathf.Exp(-tSec * 3.0f);
+                AddDirectionalTap(taps, delay, decay * 0.055f, sx * 0.45f);
             }
 
-            aziTable[az] = taps.ToArray();
+            sources[s] = new SrcEntry { dir = dir, taps = taps.ToArray() };
         }
     }
 
-    // ── Build binaural table from a mono kernel (WAV fallback) ─────────────
-    void BuildBinauralTableFromMono(float[] monoKernel, int sr)
+    void AddDirectionalTap(List<Tap> taps, int delay, float gain, float sx)
     {
-        int tapLen = monoKernel.Length;
-        int nTaps  = Mathf.Max(4, Mathf.Min(MaxTaps, tapLen));
-        int stride = Mathf.Max(1, tapLen / nTaps);
-
-        aziTable = new Tap[NumAzimuths][];
-        for (int az = 0; az < NumAzimuths; az++)
-        {
-            float aziAngle = az / (float)NumAzimuths * 2f * Mathf.PI;
-            float sinAz    = Mathf.Sin(aziAngle);
-            var   taps     = new List<Tap>(nTaps);
-
-            for (int i = 0; i < tapLen && taps.Count < nTaps; i += stride)
-            {
-                float v = monoKernel[i];
-                if (Mathf.Abs(v) < 0.0008f) continue;
-                float ild  = Mathf.Abs(sinAz) * 0.40f;
-                float tapL = sinAz >= 0f ? v : v * (1f - ild);
-                float tapR = sinAz <= 0f ? v : v * (1f - ild);
-                taps.Add(new Tap { delay = Mathf.Max(1, i), left = tapL, right = tapR });
-            }
-            aziTable[az] = taps.ToArray();
-        }
-    }
-
-    // ── Helpers ─────────────────────────────────────────────────────────────
-
-    static void NormalizeArray(float[] arr, float targetPeak)
-    {
-        float peak = 0f;
-        for (int i = 0; i < arr.Length; i++)
-            if (Mathf.Abs(arr[i]) > peak) peak = Mathf.Abs(arr[i]);
-        if (peak < 0.00001f) return;
-        float g = targetPeak / peak;
-        for (int i = 0; i < arr.Length; i++) arr[i] *= g;
+        float pan = Mathf.Clamp(sx, -1f, 1f);
+        float angle = (pan + 1f) * Mathf.PI * 0.25f;
+        float l = Mathf.Cos(angle);
+        float r = Mathf.Sin(angle);
+        float shadow = Mathf.Clamp01(Mathf.Abs(pan));
+        if (pan > 0f) l *= Mathf.Lerp(1f, 0.62f, shadow);
+        else if (pan < 0f) r *= Mathf.Lerp(1f, 0.62f, shadow);
+        taps.Add(new Tap { delay = delay, left = gain * l, right = gain * r });
     }
 }

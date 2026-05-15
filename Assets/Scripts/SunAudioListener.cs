@@ -7,7 +7,7 @@ public class SunAudioListener : MonoBehaviour
         transform.position = Vector3.zero;
         transform.rotation = Quaternion.identity;
 
-        #if STEAMAUDIO_ENABLED
+        #if STEAMAUDIO_ENABLED && !MESH_RIR_SPATIALIZER
         SteamAudio.SteamAudioManager.NotifyAudioListenerChanged();
         #endif
     }

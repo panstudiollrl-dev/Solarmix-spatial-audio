@@ -41,3 +41,10 @@ sysinfo.txt
 *.aab
 *.unitypackage
 *.app
+
+# Branch-specific spatializer files — kept in their own branches only
+# HiFiHarpSpatializer belongs to the hifi-harp branch
+Assets/Scripts/HiFiHarpSpatializer.cs
+Assets/Scripts/HiFiHarpSpatializer.cs.meta
+Assets/StreamingAssets/HiFiHARP/
+Assets/StreamingAssets/HiFiHARP.meta

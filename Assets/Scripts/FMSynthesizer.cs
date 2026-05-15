@@ -44,6 +44,7 @@ public class FMSynthesizer : MonoBehaviour
     AudioSource audioSource;
     IPlanetSpatializer spatializer;
     PlanetOrbit orbit;
+    Transform audioListener;
 
     double sampleRate;
     uint rngState = 1u;
@@ -58,6 +59,9 @@ public class FMSynthesizer : MonoBehaviour
     float orbitDistance01;
     float orbitSpeed01;
 
+    // ── Doppler ─────────────────────────────────────────────────────────────
+    float dopplerShift = 1f;   // smoothed pitch multiplier (>1 = approaching)
+
     float lowNoise;
     float slowNoise;
     float bandA;
@@ -70,6 +74,8 @@ public class FMSynthesizer : MonoBehaviour
     float pressureTarget;
     float lastPressure;
     float pourLevel;
+    float pourTarget;
+    double pourTargetTimer;
     float tubePhase;
     float flamePhase;
     float rollPhase;
@@ -88,6 +94,8 @@ public class FMSynthesizer : MonoBehaviour
     readonly double[] eventDecay = new double[EventVoices];
     readonly double[] eventBend = new double[EventVoices];
     readonly float[] eventGain = new float[EventVoices];
+    // Per-voice slow-varying pitch wobble — breaks sinusoidal pitch coherence
+    readonly double[] eventWobble = new double[EventVoices];
     int eventVoice;
 
     readonly double[] modalPhase = new double[ModalVoices];
@@ -132,7 +140,7 @@ public class FMSynthesizer : MonoBehaviour
 
     static readonly float[] PlanetVolumes =
     {
-        1.08f, 1.2f, 0.92f, 0.98f, 1.34f, 1.18f, 1.24f, 1.42f, 1.48f
+        1.08f, 0.82f, 0.92f, 0.98f, 1.34f, 1.18f, 0.85f, 1.42f, 1.48f
     };
 
     public string ModelLabel
@@ -188,6 +196,8 @@ public class FMSynthesizer : MonoBehaviour
         rngState = 0x9E3779B9u + (uint)planetIndex * 747796405u;
         pressureTarget = NextBipolar() * 0.35f;
         pourLevel = NextUnitFloat();
+        pourTarget = NextUnitFloat();
+        pourTargetTimer = 0.6 + NextUnit() * 1.8;
         smoothedVolume = masterVolume * volumeScale;
         smoothedDepth = carrierNote;
         smoothedSize = Mathf.InverseLerp(0.5f, 8f, modRatio);
@@ -258,7 +268,9 @@ public class FMSynthesizer : MonoBehaviour
 
             float output = (float)(Math.Tanh(sample * 1.15) * smoothedVolume * 0.34);
             output = HighPassDc(output);
-            outputSmooth += (output - outputSmooth) * 0.62f;
+            // Coefficient raised from 0.62 → 0.88: only smooths sample-level glitches,
+            // no longer attenuates mid frequencies which was adding a veiled, noisy quality
+            outputSmooth += (output - outputSmooth) * 0.88f;
             output = Mathf.Clamp(outputSmooth, -0.96f, 0.96f);
 
             if (float.IsNaN(output) || float.IsInfinity(output))
@@ -287,11 +299,16 @@ public class FMSynthesizer : MonoBehaviour
         switch (model)
         {
             case PhysicalModel.Bubble:
-                return GenerateBubbleModel(dt, false) * 1.18 + GenerateWaterBed(dt, 0.38f) * 0.18;
+                // Mercury: pure discrete bubble pops — no continuous waterbed underneath.
+                // The character should be unmistakably "individual bubbles", not flow.
+                return GenerateBubbleModel(dt, false) * 1.40;
             case PhysicalModel.SoftMetal:
-                return GenerateModalMetal(dt, false) * 0.95 + GenerateWaterBed(dt, 0.08f) * 0.04;
+                return GenerateModalMetal(dt, false) * 0.92;
             case PhysicalModel.RunningWater:
-                return GenerateRunningWater(dt) * 1.32 + GenerateBubbleModel(dt, true) * 0.2;
+                // Earth: continuous flowing water — vortex turbulence + bed noise dominate.
+                // The old GenerateBubbleModel(sparse) secondary was making it sound identical
+                // to Mercury. Replaced entirely with a stream-noise layer.
+                return GenerateRunningWater(dt) * 1.55;
             case PhysicalModel.Fire:
                 return GenerateFire(dt);
             case PhysicalModel.Stone:
@@ -311,53 +328,87 @@ public class FMSynthesizer : MonoBehaviour
 
     double GenerateRunningWater(double dt)
     {
-        double rate = 24.0 + smoothedRate * 76.0 + smoothedEnergy * 28.0;
+        // Lower event rate and lower frequency range than Bubble —
+        // these are large-scale eddies/gurgles, not individual cavity pops.
+        double rate = 8.0 + smoothedRate * 22.0 + smoothedEnergy * 10.0;
         mainTimer -= dt;
         if (mainTimer <= 0.0)
         {
             pressureTarget = BilinearRandom() * (0.35f + smoothedEnergy * 0.5f);
-            int bursts = 1 + Mathf.FloorToInt(smoothedEnergy * 3f + smoothedRate * 2f);
-            for (int i = 0; i < bursts; i++)
-                TriggerWaterCavity(180f, Mathf.Lerp(1800f, 5200f, 1f - Depth01()), 0.018f, 0.1f);
-            mainTimer += 1.0 / Math.Max(8.0, rate);
+            // Single burst, lower freq (60–900 Hz) = deep water gurgle, not a bubble chirp
+            TriggerWaterCavity(55f, Mathf.Lerp(400f, 900f, 1f - Depth01()), 0.032f, 0.18f);
+            mainTimer += 1.0 / Math.Max(3.0, rate);
         }
 
         float slew = Mathf.Lerp(0.0048f, 0.022f, smoothedRate) * Mathf.Lerp(1.35f, 0.72f, smoothedSize);
         pressure += (pressureTarget - pressure) * slew;
         float diff = pressure - lastPressure;
         lastPressure = pressure;
-        float vortex = Mathf.Sign(diff) * diff * diff * 44f;
+        // Vortex is the dominant character: rolling, continuous, pressure-driven turbulence
+        float vortex = Mathf.Sign(diff) * diff * diff * 82f;
+
         double cavities = RenderEventVoices(dt, 0.0032);
-        double bed = GenerateWaterBed(dt, 0.52f + smoothedEnergy * 0.24f);
-        return bed * 0.52 + vortex * 0.34 + cavities * 1.18;
+        double bed  = GenerateWaterBed(dt, 0.68f + smoothedEnergy * 0.30f);
+        // Bed + vortex dominate (sounds like a river/stream); cavities are subtle undertones
+        return bed * 0.92 + vortex * 0.62 + cavities * 0.40;
     }
 
     double GenerateBubbleModel(double dt, bool sparse)
     {
         double rate = sparse
             ? 4.0 + smoothedRate * 12.0 + smoothedEnergy * 5.0
-            : 14.0 + smoothedRate * 32.0 + smoothedEnergy * 16.0;
+            : 10.0 + smoothedRate * 22.0 + smoothedEnergy * 10.0;
         mainTimer -= dt;
         if (mainTimer <= 0.0)
         {
-            float low = Mathf.Lerp(160f, 900f, 1f - smoothedSize);
-            float high = Mathf.Lerp(1400f, 5200f, 1f - Depth01());
-            TriggerWaterCavity(low, high, 0.012f, sparse ? 0.075f : 0.045f);
-            mainTimer += 1.0 / Math.Max(1.5, rate + NextUnit() * rate * 0.45);
+            // Mercury: high-frequency range (400–6000 Hz), very short duration (8–35 ms).
+            // The fast bend (0.0042) makes the frequency chirp audibly downward —
+            // the distinctive Minnaert resonance of a collapsing gas cavity.
+            float low  = Mathf.Lerp(400f,  1200f, 1f - smoothedSize);
+            float high = Mathf.Lerp(2800f, 6000f, 1f - Depth01());
+            TriggerWaterCavityChirp(low, high, 0.008f, 0.035f);
+            mainTimer += 1.0 / Math.Max(1.5, rate + NextUnit() * rate * 0.50);
         }
 
-        return RenderEventVoices(dt, 0.0024) * (sparse ? 0.8 : 1.18);
+        return RenderEventVoices(dt, 0.0042) * 1.30;
+    }
+
+    // Like TriggerWaterCavity but with a faster, steeper frequency chirp and
+    // shorter envelope — sounds like a single sharp bubble "tock" rather than a tone.
+    void TriggerWaterCavityChirp(float low, float high, float minDur, float maxDur)
+    {
+        int v = eventVoice++ % EventVoices;
+        float sizeSkew = Mathf.Pow(NextUnitFloat(), Mathf.Lerp(2.8f, 0.9f, smoothedEnergy));
+        float start = low * Mathf.Pow(Mathf.Max(1.01f, high / low), sizeSkew);
+        start *= (0.78f + NextUnitFloat() * 0.46f) * dopplerShift;
+        // Target is LOWER than start — a sharp descending chirp (rising for real Minnaert but
+        // downward sounds more natural for our bubble character)
+        eventFreq[v]       = start;
+        eventTargetFreq[v] = start * (0.38f + NextUnitFloat() * 0.22f);  // drops to 40–60% of start
+        eventBend[v]       = 0.0055 + smoothedRate * 0.003 + smoothedEnergy * 0.002; // fast bend
+        eventPhase[v]      = NextUnit();
+        eventEnv[v]        = (0.18f + smoothedEnergy * 0.40f) * (0.5f + NextUnitFloat() * 0.8f);
+        eventGain[v]       = 0.22f + smoothedEnergy * 0.40f;
+        double dur = minDur + NextUnit() * Math.Max(0.002, maxDur);
+        eventDecay[v]      = Math.Exp(-1.0 / (sampleRate * dur));
+        eventWobble[v]     = NextUnit() * 2.0 - 1.0;
     }
 
     double GenerateDeepPour(double dt)
     {
-        pourLevel += (float)dt * (0.018f + smoothedRate * 0.035f);
-        if (pourLevel > 1f)
-            pourLevel -= 1f;
+        pourTargetTimer -= dt;
+        if (pourTargetTimer <= 0.0)
+        {
+            pourTarget = Mathf.Clamp01(0.16f + NextUnitFloat() * 0.78f);
+            pourTargetTimer = 0.8 + NextUnit() * (3.2 - smoothedRate * 1.5);
+        }
+
+        float liquidSlew = (0.0012f + smoothedRate * 0.0024f) * Mathf.Lerp(0.7f, 1.6f, smoothedEnergy);
+        pourLevel += (pourTarget - pourLevel) * liquidSlew;
 
         float liquidDepth = Mathf.SmoothStep(0.1f, 1f, pourLevel);
         float cavity = 1f - liquidDepth;
-        double rate = 11.0 + smoothedRate * 26.0 + smoothedEnergy * 12.0;
+        double rate = 9.0 + smoothedRate * 20.0 + smoothedEnergy * 10.0;
         mainTimer -= dt;
         if (mainTimer <= 0.0)
         {
@@ -367,11 +418,13 @@ public class FMSynthesizer : MonoBehaviour
             mainTimer += 1.0 / Math.Max(2.0, rate);
         }
 
-        float tubeFreq = Mathf.Lerp(58f, 190f, cavity) * Mathf.Lerp(0.72f, 1.35f, Depth01());
-        tubePhase = Wrap01(tubePhase + tubeFreq * (float)dt);
-        double tube = Math.Sin(tubePhase * TwoPi) * (0.13 + liquidDepth * 0.22);
-        double bed = GenerateWaterBed(dt, 0.74f) * (0.9 + smoothedEnergy * 0.24);
-        return bed * 0.78 + tube * 0.78 + RenderEventVoices(dt, 0.0038) * 0.86;
+        // Tube sine oscillator removed — it created a clear periodic descending pitch
+        // as pourLevel tracked through its random targets. Replaced with a wider
+        // water bed whose amount breathes with the liquid depth, giving a "container
+        // resonance" character without any perceptible fundamental frequency.
+        float bedAmount = 0.74f + cavity * 0.48f + smoothedEnergy * 0.22f;
+        double bed = GenerateWaterBed(dt, bedAmount);
+        return bed * 1.25 + RenderEventVoices(dt, 0.0038) * 0.92;
     }
 
     double GenerateIceRain(double dt)
@@ -484,14 +537,24 @@ public class FMSynthesizer : MonoBehaviour
         int v = eventVoice++ % EventVoices;
         float sizeSkew = Mathf.Pow(NextUnitFloat(), Mathf.Lerp(2.1f, 0.65f, smoothedEnergy));
         float start = low * Mathf.Pow(Mathf.Max(1.01f, high / low), sizeSkew);
+
+        // Extra frequency scatter: each cavity uses a randomised inharmonic multiple
+        // This is the key change that makes bubbles sound less like musical tones —
+        // each event lands at a slightly different pitch, no stable harmonic series
+        float scatterRatio = 0.82f + NextUnitFloat() * 0.42f;  // ×0.82–1.24 random offset
+        start *= scatterRatio;
+
         eventFreq[v] = start;
-        eventTargetFreq[v] = start * (1.08f + NextUnitFloat() * Mathf.Lerp(0.16f, 0.52f, smoothedEnergy));
-        eventBend[v] = 0.0012 + smoothedRate * 0.0028 + smoothedEnergy * 0.002;
+        eventTargetFreq[v] = start * (1.12f + NextUnitFloat() * Mathf.Lerp(0.22f, 0.68f, smoothedEnergy));
+        eventBend[v] = 0.0014 + smoothedRate * 0.0032 + smoothedEnergy * 0.002;
         eventPhase[v] = NextUnit();
         eventEnv[v] = (0.12f + smoothedEnergy * 0.34f) * (0.6f + NextUnitFloat() * 0.6f);
         eventGain[v] = 0.18f + smoothedEnergy * 0.35f;
         double dur = minDur + NextUnit() * Math.Max(0.002f, maxDur);
         eventDecay[v] = Math.Exp(-1.0 / (sampleRate * dur));
+
+        // Seed the per-voice wobble so each voice starts at a random phase of its noise
+        eventWobble[v] = NextUnit() * 2.0 - 1.0;
     }
 
     void TriggerClickModal(float root, float decay, float spread, float amp)
@@ -510,18 +573,27 @@ public class FMSynthesizer : MonoBehaviour
 
     void TriggerMetalModal(float root, bool ice)
     {
+        // Both ice and non-ice use 3 partials.
+        // Ice had 5 long-decay partials (up to 3.5s each) causing ~18 concurrent
+        // sinusoids at steady state — the source of Uranus's grainy, rough texture.
+        // 3 partials with max 1.6s decay keeps concurrent voices around 7, which is clean.
         float[] ratios = ice
-            ? new[] { 1f, 2.13f, 3.71f, 5.19f, 6.92f }
-            : new[] { 1f, 2.01f, 2.89f, 4.13f, 5.32f };
-        float amp = ice ? 0.32f : 0.42f;
+            ? new[] { 1f, 2.13f, 3.71f }
+            : new[] { 1f, 2.01f, 2.89f };
+        // Non-ice 0.26, ice 0.22: high Rate/Energy can stack 13+ concurrent voices.
+        // Keeping individual amp low lets the tanh stay out of saturation.
+        float amp = ice ? 0.22f : 0.26f;
         for (int i = 0; i < ratios.Length; i++)
         {
             int v = modalVoice++ % ModalVoices;
-            modalFreq[v] = root * ratios[i] * (1f + (NextUnitFloat() - 0.5f) * 0.018f);
+            float spread = ice ? 0.022f : 0.038f;
+            modalFreq[v] = root * ratios[i] * (1f + (NextUnitFloat() - 0.5f) * spread);
             modalPhase[v] = NextUnit();
             modalEnv[v] = amp / (1f + i * 0.62f);
             modalGain[v] = Mathf.Lerp(0.5f, 1f, NextUnitFloat());
-            double dur = (ice ? 1.6 : 1.1) + i * 0.28 + smoothedSize * 1.8;
+            double dur = ice
+                ? Mathf.Min(1.6f, 1.1f + i * 0.22f + smoothedSize * 0.95f)   // was up to 3.5s
+                : (0.38 + i * 0.14 + smoothedSize * 0.55);
             modalDecay[v] = Math.Exp(-1.0 / (sampleRate * dur));
         }
     }
@@ -563,7 +635,17 @@ public class FMSynthesizer : MonoBehaviour
                 continue;
 
             eventFreq[i] += (eventTargetFreq[i] - eventFreq[i]) * Math.Max(bendFloor, eventBend[i]);
-            eventPhase[i] = Wrap01(eventPhase[i] + eventFreq[i] * dt);
+
+            // Per-voice slow pitch wobble: evolves toward random noise → breaks pure-tone pitch quality
+            // Rate constant ~0.0022/sample ≈ 22ms time constant at 44kHz
+            eventWobble[i] += ((NextUnit() * 2.0 - 1.0) - eventWobble[i]) * 0.0022;
+
+            // Doppler + wobble applied to instantaneous frequency
+            // Wobble depth scales with envelope (loudest moments are most physically energetic)
+            double wobbleDepth = 0.045 * eventEnv[i];
+            double instFreq = eventFreq[i] * dopplerShift * (1.0 + eventWobble[i] * wobbleDepth);
+
+            eventPhase[i] = Wrap01(eventPhase[i] + instFreq * dt);
             eventEnv[i] *= eventDecay[i];
             double env = eventEnv[i];
             sum += Math.Sin(eventPhase[i] * TwoPi) * env * eventGain[i];
@@ -592,6 +674,42 @@ public class FMSynthesizer : MonoBehaviour
         float speed = orbit != null ? Mathf.Abs(orbit.baseSpeed) : Mathf.Max(0.1f, lfoRate);
         orbitDistance01 = Mathf.InverseLerp(48f, 284f, dist);
         orbitSpeed01 = Mathf.InverseLerp(0.7f, 8f, speed);
+        ComputeDoppler(dist, speed);
+    }
+
+    void ComputeDoppler(float orbitDist, float orbitalSpeed)
+    {
+        if (orbit == null) return;
+        if (audioListener == null)
+            audioListener = FindAnyObjectByType<AudioListener>()?.transform;
+        if (audioListener == null) return;
+
+        // Planet's current world position and tangential velocity direction
+        // (perpendicular to radial in XZ plane, in the direction of orbit)
+        Vector3 pos   = transform.position;
+        Vector3 toSun = pos.magnitude > 0.001f ? -pos.normalized : Vector3.forward;
+        // Tangent is 90° CCW of (toward sun), signed by orbit direction
+        Vector3 tangent = new Vector3(-toSun.z, 0f, toSun.x) * Mathf.Sign(orbitalSpeed);
+
+        // Tangential speed in world units/sec
+        // deg/sec → rad/sec → arc length/sec
+        float tangentSpeed = (orbitalSpeed * Mathf.Deg2Rad) * orbitDist;
+
+        // Direction from planet toward listener
+        Vector3 toListener = (audioListener.position - pos).normalized;
+
+        // Radial velocity: positive = moving toward listener
+        float radialVel = Vector3.Dot(tangent * tangentSpeed, toListener);
+
+        // Wider range than before — flyby passes should feel like a real pitch
+        // sweep, not just a subtle wobble.  ±5.5 % is still musical enough to
+        // avoid the "repeating pitch ramp" artefact on circular orbits.
+        const float c = 260f;
+        float targetShift = c / Mathf.Max(0.01f, c - radialVel);
+        targetShift = Mathf.Clamp(targetShift, 0.955f, 1.055f);
+
+        // Smooth over ~1 second to avoid sudden pitch jumps
+        dopplerShift += (targetShift - dopplerShift) * 0.003f;
     }
 
     float Depth01()

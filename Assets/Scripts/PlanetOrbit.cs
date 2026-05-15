@@ -3,6 +3,7 @@ using UnityEngine;
 public class PlanetOrbit : MonoBehaviour
 {
     public enum TrajectoryType { Elliptical, Circular, Figure8, Lissajous, Rose }
+    const int OrbitSegments = 384;
 
     [Header("行星基本資料")]
     public string planetName = "行星";
@@ -44,10 +45,10 @@ public class PlanetOrbit : MonoBehaviour
     void UpdateOrbitLine()
     {
         if (orbitLine == null) return;
-        orbitLine.positionCount = 129;
-        for (int s = 0; s <= 128; s++)
+        orbitLine.positionCount = OrbitSegments + 1;
+        for (int s = 0; s <= OrbitSegments; s++)
         {
-            float a = (s / 128f) * Mathf.PI * 2f;
+            float a = (s / (float)OrbitSegments) * Mathf.PI * 2f;
             orbitLine.SetPosition(s, GetTrajectoryPos(trajectoryType, a, dist));
         }
     }

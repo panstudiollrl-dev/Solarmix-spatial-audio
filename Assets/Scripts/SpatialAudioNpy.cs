@@ -13,6 +13,11 @@ public static class SpatialAudioNpy
     public static bool TryRead(string path, out ArrayData data)
     {
         data = default;
+        // WebGL uses HTTP-based streaming assets — File.IO is not available.
+        // Return false so callers fall through to their synthetic fallback.
+#if UNITY_WEBGL && !UNITY_EDITOR
+        return false;
+#endif
         if (!File.Exists(path))
             return false;
 

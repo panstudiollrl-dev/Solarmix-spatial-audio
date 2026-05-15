@@ -26,6 +26,13 @@ public class CameraController : MonoBehaviour
     // Fingers that started on UI — blocked for their entire gesture
     private readonly HashSet<int> uiFingers = new HashSet<int>();
 
+    /// <summary>
+    /// Set true by SolarSystemUI whenever any interactive panel is visible.
+    /// Completely suppresses camera input — more reliable than per-frame raycasting
+    /// against transparent UI backgrounds that have raycastTarget = false.
+    /// </summary>
+    public static bool Blocked = false;
+
     void Start()
     {
         // Force correct range regardless of Inspector values
@@ -36,18 +43,28 @@ public class CameraController : MonoBehaviour
         UpdateCamera();
     }
 
+    public void ResetView()
+    {
+        rotX = 55f;
+        rotY = 0f;
+        target = Vector3.zero;
+        currentDistance = 950f;
+        UpdateCamera();
+    }
+
     void Update()
     {
-        // Register / release UI-started fingers
+        // When any UI panel is visible, ignore all camera input entirely.
+        if (Blocked) { UpdateCamera(); return; }
+
+        // ── Track fingers that started on UI ──────────────────────────────────
         for (int i = 0; i < Input.touchCount; i++)
         {
             var touch = Input.GetTouch(i);
             if (touch.phase == TouchPhase.Began)
             {
-                var pe = new PointerEventData(EventSystem.current) { position = touch.position };
-                var hits = new List<RaycastResult>();
-                EventSystem.current.RaycastAll(pe, hits);
-                if (hits.Count > 0) uiFingers.Add(touch.fingerId);
+                if (IsTouchOnUI(touch.position))
+                    uiFingers.Add(touch.fingerId);
             }
             else if (touch.phase == TouchPhase.Ended || touch.phase == TouchPhase.Canceled)
                 uiFingers.Remove(touch.fingerId);
@@ -71,19 +88,37 @@ public class CameraController : MonoBehaviour
             currentDistance = Mathf.Clamp(currentDistance, minDistance, maxDistance);
         }
 
-        // 單指旋轉 — 跳過從 UI 開始的手指
+        // 單指旋轉 — 雙重封鎖：
+        //   1. uiFingers：手指從 UI 元件上開始的整個手勢
+        //   2. IsTouchOnUI：即時檢查（catch panels that appeared after touch began,
+        //      or sliders/scrollviews whose raycast isn't caught at Began phase）
         if (Input.touchCount == 1)
         {
             Touch t = Input.GetTouch(0);
-            if (t.phase == TouchPhase.Moved && !uiFingers.Contains(t.fingerId))
+            if (t.phase == TouchPhase.Moved)
             {
-                rotY += t.deltaPosition.x * touchSensitivity;
-                rotX -= t.deltaPosition.y * touchSensitivity;
-                rotX = Mathf.Clamp(rotX, 10f, 89f);
+                bool blocked = uiFingers.Contains(t.fingerId) || IsTouchOnUI(t.position);
+                if (!blocked)
+                {
+                    rotY += t.deltaPosition.x * touchSensitivity;
+                    rotX -= t.deltaPosition.y * touchSensitivity;
+                    rotX = Mathf.Clamp(rotX, 10f, 89f);
+                }
             }
         }
 
         UpdateCamera();
+    }
+
+    // Returns true if screenPos is currently over any UI element.
+    // Called both on Began (to register uiFingers) and on every Moved frame
+    // (to catch sliders / panels that may not have been hit at Began).
+    bool IsTouchOnUI(Vector2 screenPos)
+    {
+        var pe   = new PointerEventData(EventSystem.current) { position = screenPos };
+        var hits = new List<RaycastResult>();
+        EventSystem.current.RaycastAll(pe, hits);
+        return hits.Count > 0;
     }
 
     void UpdateCamera()
