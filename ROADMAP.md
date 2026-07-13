@@ -31,6 +31,7 @@ This roadmap is intentionally practical: Solarmix is both an artwork and a spati
 
 - Document build steps for Unity Editor and iOS.
 - Track third-party dataset requirements and licenses.
+- Maintain `docs/DATASETS.md` as the source-of-truth for HRTF, BRIR, SRIR, RIR, HiFi-HARP, and MeshRIR provenance.
 - Add architecture notes for the audio graph and spatializer interface.
 - Add contribution guidance for listening tests and sound patches.
 - Document spatial validation protocols in `docs/VALIDATION.md`.

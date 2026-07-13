@@ -12,10 +12,10 @@ Current branches:
 
 | Branch | Purpose |
 | --- | --- |
-| `main` | Steam Audio baseline and stable project entry point |
-| `steam-audio` | Explicit baseline branch for the original Steam Audio implementation |
+| `meshRIR` | Active/default Unity/iOS branch for MeshRIR-inspired validation, smoothed interpolation, and procedural physical-model sound probes |
+| `main` | Historical Steam Audio baseline and repository documentation root |
+| `steam-audio` | Explicit checkpoint for the original Steam Audio implementation |
 | `hifi-harp` | Runtime spatialization experiments using HiFi-HARP-style FOA room impulse responses |
-| `meshRIR` | Active MeshRIR-inspired Unity/iOS branch with smoothed interpolation and procedural physical-model sound design |
 | `mesh-rir` | Earlier MeshRIR implementation checkpoint |
 
 ## Why This Exists
@@ -58,7 +58,9 @@ See [docs/VALIDATION.md](docs/VALIDATION.md) for the working validation plan.
 
 ## Runtime Data
 
-Large datasets are intentionally not committed directly unless they are small extracted runtime examples.
+Large datasets are intentionally not committed directly unless they are small extracted runtime examples. Solarmix should always document where a spatial audio dataset comes from, what type of data it contains, and whether redistribution is allowed.
+
+See [docs/DATASETS.md](docs/DATASETS.md) for the working dataset source list.
 
 ### HiFi-HARP
 
@@ -91,9 +93,9 @@ ir_*.npy
 
 If dataset files are missing, the branch uses a compact built-in mesh-style fallback so the project remains runnable.
 
-### Other Candidate Datasets
+### Other Candidate Dataset Families
 
-Future dataset adapters may target open HRTF, BRIR, SRIR, and RIR resources such as SOFA-format HRTF collections, CIPIC, SADIE, SONICOM, and other public room impulse response datasets. Each adapter should document licensing and redistribution rules before any derived assets are committed.
+Future dataset adapters may target open HRTF, BRIR, SRIR, and RIR resources such as SOFA-format HRTF collections, CIPIC, SADIE II, SONICOM, and other public room impulse response datasets. Each adapter should document licensing and redistribution rules before any derived assets are committed.
 
 ## Getting Started
 
@@ -118,6 +120,7 @@ See [ROADMAP.md](ROADMAP.md).
 Current priorities:
 
 - stabilize MeshRIR interpolation and true dataset loading;
+- document HRTF, BRIR, SRIR, RIR, HiFi-HARP, and MeshRIR sources clearly;
 - define repeatable orbit/timbre/envelope validation scenes;
 - improve mobile UI and orientation feedback;
 - document sound-model parameters per planet;
