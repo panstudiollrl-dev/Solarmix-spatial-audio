@@ -48,3 +48,9 @@ Assets/Scripts/HiFiHarpSpatializer.cs
 Assets/Scripts/HiFiHarpSpatializer.cs.meta
 Assets/StreamingAssets/HiFiHARP/
 Assets/StreamingAssets/HiFiHARP.meta
+
+# MeshRIR branch keeps the folder/readme, but not large downloaded datasets
+Assets/StreamingAssets/MeshRIR/**/*.npy
+Assets/StreamingAssets/MeshRIR/**/*.wav
+Assets/StreamingAssets/MeshRIR/**/*.mat
+Assets/StreamingAssets/MeshRIR/**/*.zip
