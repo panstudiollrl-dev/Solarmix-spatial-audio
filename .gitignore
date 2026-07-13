@@ -41,3 +41,11 @@ sysinfo.txt
 *.aab
 *.unitypackage
 *.app
+
+# Branch-specific spatializer files and large runtime datasets
+Assets/Scripts/HiFiHarpSpatializer.cs
+Assets/Scripts/HiFiHarpSpatializer.cs.meta
+Assets/StreamingAssets/HiFiHARP/
+Assets/StreamingAssets/HiFiHARP.meta
+Assets/StreamingAssets/MeshRIR/
+Assets/StreamingAssets/MeshRIR.meta

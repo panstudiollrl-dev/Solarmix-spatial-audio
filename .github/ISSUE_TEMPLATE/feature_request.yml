@@ -1,0 +1,30 @@
+name: Feature request or sound-design proposal
+description: Suggest a planet voice, control, spatial audio feature, or documentation improvement.
+title: "[Idea]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposal
+      description: What should Solarmix do differently?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: Explain the listening, artistic, accessibility, or engineering value.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Sound design
+        - Spatial audio
+        - Mobile UI
+        - Dataset integration
+        - Documentation
+        - Build/release
+        - Other
+

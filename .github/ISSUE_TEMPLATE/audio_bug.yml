@@ -1,0 +1,44 @@
+name: Audio or spatialization bug
+description: Report a sound, spatialization, clipping, or discontinuity problem.
+title: "[Audio]: "
+labels: ["audio", "bug"]
+body:
+  - type: dropdown
+    id: branch
+    attributes:
+      label: Branch
+      options:
+        - main / steam-audio
+        - hifi-harp
+        - meshRIR
+        - mesh-rir
+        - unknown
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and device
+      placeholder: "Unity Editor on macOS, iPhone model, etc."
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: What did you hear?
+      description: Describe the audible problem as clearly as possible.
+      placeholder: "Example: spatial motion jumps at the front-center crossing; Neptune clips when Energy is above 0.8."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Listening notes or reproduction steps
+      description: Include headphones/speakers, parameter values, screenshots, or recordings if useful.
+
